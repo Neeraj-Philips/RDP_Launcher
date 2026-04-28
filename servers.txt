@@ -1,0 +1,6 @@
+# RDP Server List
+# Add one IP/hostname per line
+# Lines starting with # are ignored
+
+# Replace these with your actual server IPs
+192.168.58.26
