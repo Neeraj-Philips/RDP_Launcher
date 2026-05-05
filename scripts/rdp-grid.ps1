@@ -1,10 +1,9 @@
 # ============================================
-# RDP Grid Launcher (with Auto-Login)
+# RDP Grid Launcher
 # ============================================
-# Launches RDP sessions in a tiled grid.
-# Uses mstsc /w /h for sizing.
-# After all sessions connect, tiles them using
-# Windows' built-in cascade/tile functionality.
+# Launches RDP sessions in fullscreen with
+# auto-login via cmdkey + UI Automation + SendKeys.
+# Same login approach as rdp-gui.ps1.
 # ============================================
 
 #Requires -Version 5.1
@@ -12,41 +11,7 @@
 $ErrorActionPreference = "Stop"
 
 Add-Type -AssemblyName System.Windows.Forms
-
-# Win32 API
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class WinAPI {
-    [DllImport("user32.dll")]
-    public static extern bool SetForegroundWindow(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-
-    [DllImport("user32.dll")]
-    public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
-
-    [DllImport("user32.dll")]
-    public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
-
-    // Tile windows via shell
-    [DllImport("user32.dll")]
-    public static extern void TileWindows(IntPtr hwndParent, uint wHow, IntPtr lpRect, uint cKids, IntPtr[] lpKids);
-
-    public const int SW_SHOWNORMAL = 1;
-    public const int SW_RESTORE = 9;
-    public const int SW_SHOWNOACTIVATE = 4;
-    public const uint SWP_SHOWWINDOW = 0x0040;
-    public const uint SWP_NOZORDER = 0x0004;
-    public const uint MDITILE_VERTICAL = 0x0000;
-    public const uint MDITILE_HORIZONTAL = 0x0001;
-
-    public static void TileTheseWindows(IntPtr[] handles) {
-        TileWindows(IntPtr.Zero, MDITILE_VERTICAL, IntPtr.Zero, (uint)handles.Length, handles);
-    }
-}
-"@
+Add-Type -AssemblyName System.Drawing
 
 # ===== LOAD SHARED CONFIG =====
 $scriptDir = $PSScriptRoot
@@ -61,7 +26,27 @@ $logFile     = Join-Path $logDir     "rdp-grid.log"
 
 Initialize-Directories
 
-# ===== LOAD UI AUTOMATION =====
+# Win32 API for window activation
+try {
+    Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class WinAPI {
+    [DllImport("user32.dll")]
+    public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int W, int H, bool repaint);
+
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    public const int SW_RESTORE = 9;
+}
+"@
+} catch {}
+
+# Load UI Automation helper
 $uiAutomationPath = Join-Path $scriptDir "lib\RdpUIAutomation.cs"
 $uiAutomationLoaded = $false
 if (Test-Path $uiAutomationPath) {
@@ -89,122 +74,8 @@ $username = $creds.Username
 $password = $creds.Password
 
 if (-not $username) {
-    Write-Log -Message "ERROR: No username in config/user.txt" -LogFile $logFile -Level "ERROR"
+    Write-Log -Message "ERROR: No username configured in config/user.txt" -LogFile $logFile -Level "ERROR"
     exit 1
-}
-
-# ===== KILL EXISTING MSTSC SESSIONS =====
-function Stop-ExistingSessions {
-    $existing = Get-Process -Name "mstsc" -ErrorAction SilentlyContinue
-    if ($existing) {
-        Write-Log -Message "Killing $($existing.Count) existing mstsc process(es)..." -LogFile $logFile
-        $existing | Stop-Process -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 2
-    }
-}
-
-# ===== AUTO-LOGIN VIA UI AUTOMATION =====
-function Invoke-AutoLogin {
-    param(
-        [int]$ProcessId,
-        [string]$Server,
-        [string]$Username,
-        [string]$Password
-    )
-
-    if (-not $uiAutomationLoaded -or -not $Password) { return }
-
-    # Phase 1: Dismiss security/certificate warning
-    $securityTitles = @("security", "certificate", "trust", "warning", "unknown publisher")
-    $secWin = [RdpUIAutomation]::WaitForWindowTitleByPid($ProcessId, $securityTitles, 8000)
-
-    if ($null -ne $secWin) {
-        $clicked = [RdpUIAutomation]::ClickButton($secWin, "Yes")
-        if (-not $clicked) { $clicked = [RdpUIAutomation]::ClickButton($secWin, "Connect") }
-        if (-not $clicked) { [RdpUIAutomation]::ClickFirstActionButton($secWin) | Out-Null }
-        Write-Log -Message "  $Server - Security warning dismissed" -LogFile $logFile
-        Start-Sleep -Milliseconds 1500
-    }
-
-    # Phase 2: Credential prompt or SendKeys
-    $credWin = [RdpUIAutomation]::WaitForWindowWithEditsByPid($ProcessId, 10000)
-
-    if ($null -ne $credWin) {
-        [RdpUIAutomation]::FillCredentials($credWin, $Username, $Password) | Out-Null
-        Start-Sleep -Milliseconds 500
-        $clicked = [RdpUIAutomation]::ClickButton($credWin, "OK")
-        if (-not $clicked) { [RdpUIAutomation]::ClickFirstActionButton($credWin) | Out-Null }
-        Write-Log -Message "  $Server - Credentials filled (NLA)" -LogFile $logFile
-    } else {
-        $sessionTitles = @($Server, "Remote Desktop")
-        $sessionWin = [RdpUIAutomation]::WaitForWindowTitleByPid($ProcessId, $sessionTitles, 5000)
-        if ($null -ne $sessionWin) {
-            Start-Sleep -Seconds 3
-
-            $mstscProc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
-            if ($null -ne $mstscProc) {
-                $mstscProc.Refresh()
-                $hwnd = $mstscProc.MainWindowHandle
-                if ($hwnd -ne [IntPtr]::Zero) {
-                    [WinAPI]::ShowWindow($hwnd, [WinAPI]::SW_SHOWNORMAL) | Out-Null
-                    [WinAPI]::SetForegroundWindow($hwnd) | Out-Null
-                } else {
-                    try {
-                        $wshell = New-Object -ComObject WScript.Shell
-                        $wshell.AppActivate($ProcessId) | Out-Null
-                    } catch {}
-                }
-            }
-
-            Start-Sleep -Milliseconds 800
-            [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
-            Start-Sleep -Milliseconds 300
-            [System.Windows.Forms.SendKeys]::SendWait($Password)
-            Start-Sleep -Milliseconds 300
-            [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
-            Write-Log -Message "  $Server - Credentials typed (SendKeys)" -LogFile $logFile
-        }
-    }
-
-    # Phase 3: Second security warning
-    Start-Sleep -Milliseconds 1000
-    $secWin2 = [RdpUIAutomation]::WaitForWindowTitleByPid($ProcessId, $securityTitles, 3000)
-    if ($null -ne $secWin2) {
-        [RdpUIAutomation]::ClickButton($secWin2, "Yes") | Out-Null
-        Write-Log -Message "  $Server - Second warning dismissed" -LogFile $logFile
-    }
-}
-
-# ===== TILE WINDOWS =====
-function Invoke-TileWindows {
-    param([array]$Processes)
-
-    Write-Log -Message "Tiling $($Processes.Count) windows..." -LogFile $logFile
-
-    # Collect valid window handles
-    $handles = @()
-    foreach ($proc in $Processes) {
-        if ($null -eq $proc -or $proc.HasExited) { continue }
-        $proc.Refresh()
-        $hwnd = $proc.MainWindowHandle
-        if ($hwnd -ne [IntPtr]::Zero) {
-            # Make sure window is in normal state (not minimized/maximized)
-            [WinAPI]::ShowWindow($hwnd, [WinAPI]::SW_RESTORE) | Out-Null
-            $handles += $hwnd
-        }
-    }
-
-    if ($handles.Count -eq 0) {
-        Write-Log -Message "  No window handles found to tile" -LogFile $logFile -Level "WARN"
-        return
-    }
-
-    Write-Log -Message "  Found $($handles.Count) window handles" -LogFile $logFile
-
-    # Use Windows TileWindows API to tile them
-    [WinAPI]::TileTheseWindows($handles)
-
-    Write-Log -Message "  Windows tiled" -LogFile $logFile
 }
 
 # ===== MAIN =====
@@ -213,26 +84,20 @@ try {
     Write-Log -Message "RDP Grid Launcher" -LogFile $logFile
     Write-Log -Message "  Username: $username" -LogFile $logFile
 
-    # Kill any existing RDP sessions first
-    Stop-ExistingSessions
-
     # Load and validate servers
-    $servers = Get-ValidatedServers -Path $serverFile -LogFile $logFile
+    [array]$servers = Get-ValidatedServers -Path $serverFile -LogFile $logFile
 
     if ($servers.Count -eq 0) {
-        Write-Log -Message "ERROR: No valid servers configured" -LogFile $logFile -Level "ERROR"
+        Write-Log -Message "ERROR: No valid servers in $serverFile" -LogFile $logFile -Level "ERROR"
         exit 1
     }
 
     Write-Log -Message "  Servers: $($servers.Count)" -LogFile $logFile
 
-    # Launch all sessions
-    $processes = @()
     $launched = 0
     $failed   = 0
 
-    for ($i = 0; $i -lt $servers.Count; $i++) {
-        $server = $servers[$i]
+    foreach ($server in $servers) {
         Write-Log -Message "--- $server ---" -LogFile $logFile
 
         try {
@@ -241,65 +106,119 @@ try {
             if ($cmdkeyList -notmatch [regex]::Escape("TERMSRV/$server")) {
                 if ($password) {
                     & cmdkey /generic:TERMSRV/$server /user:$username /pass:$password | Out-Null
+                    Write-Log -Message "  Credential stored for $server" -LogFile $logFile
                 }
             }
 
-            # Generate simple RDP file (no position - we tile after)
-            $safe = $server -replace '[^a-zA-Z0-9\.\-]', '_'
-            $rdpPath = Join-Path $rdpFolder "$safe.rdp"
+            # Generate RDP file with fullscreen
+            $rdpPath = New-RdpFile -Server $server -Username $username -FullScreen
+            Write-Log -Message "  RDP file: $rdpPath" -LogFile $logFile
 
-            $rdpContent = @"
-full address:s:$server
-username:s:$username
-prompt for credentials:i:0
-authentication level:i:2
-enablecredsspsupport:i:1
-use multimon:i:0
-screen mode id:i:1
-desktopwidth:i:1280
-desktopheight:i:800
-smart sizing:i:1
-redirectclipboard:i:1
-disable wallpaper:i:1
-allow font smoothing:i:1
-"@
-            Set-Content -Path $rdpPath -Value $rdpContent -Encoding ASCII
-
-            # Launch mstsc
-            $proc = Start-Process "mstsc.exe" -ArgumentList "`"$rdpPath`"" -PassThru
+            # Launch with retry
+            $proc = Start-RdpProcess -RdpFilePath $rdpPath -MaxRetries 3 -LogFile $logFile
 
             if ($null -ne $proc) {
                 Write-Log -Message "  PID: $($proc.Id)" -LogFile $logFile
 
-                # Auto-login
-                Invoke-AutoLogin -ProcessId $proc.Id -Server $server -Username $username -Password $password
+                if ($uiAutomationLoaded -and $password) {
+                    # Phase 1: Dismiss security/certificate warning
+                    $securityTitles = @("security", "certificate", "trust", "warning", "unknown publisher", "Remote Desktop Connection")
+                    $secWin = [RdpUIAutomation]::WaitForWindowTitleByPid($proc.Id, $securityTitles, 10000)
 
-                $processes += $proc
+                    if ($null -ne $secWin) {
+                        Write-Log -Message "  Security dialog: '$($secWin.Current.Name)'" -LogFile $logFile
+                        $clicked = [RdpUIAutomation]::ClickButton($secWin, "Yes")
+                        if (-not $clicked) { $clicked = [RdpUIAutomation]::ClickButton($secWin, "Connect") }
+                        if (-not $clicked) { [RdpUIAutomation]::ClickFirstActionButton($secWin) | Out-Null }
+                        Write-Log -Message "  Security warning dismissed" -LogFile $logFile
+                        Start-Sleep -Milliseconds 1500
+                    }
+
+                    # Phase 2: Wait for session window, then type credentials via SendKeys
+                    Start-Sleep -Seconds 3
+                    Write-Log -Message "  Waiting for session window..." -LogFile $logFile
+
+                    $sessionTitles = @($server, "Remote Desktop")
+                    $sessionWin = [RdpUIAutomation]::WaitForWindowTitleByPid($proc.Id, $sessionTitles, 10000)
+
+                    if ($null -ne $sessionWin) {
+                        Write-Log -Message "  Session connected: '$($sessionWin.Current.Name)'" -LogFile $logFile
+
+                        Start-Sleep -Seconds 3
+
+                        # Activate the RDP window
+                        $focused = $false
+                        $proc.Refresh()
+                        $hwnd = $proc.MainWindowHandle
+                        if ($hwnd -ne [IntPtr]::Zero) {
+                            [WinAPI]::ShowWindow($hwnd, 9) | Out-Null
+                            [WinAPI]::SetForegroundWindow($hwnd) | Out-Null
+                            $focused = $true
+                            Write-Log -Message "  Window focused via MainWindowHandle" -LogFile $logFile
+                        }
+
+                        if (-not $focused) {
+                            try {
+                                $wshell = New-Object -ComObject WScript.Shell
+                                $wshell.AppActivate($proc.Id) | Out-Null
+                                $focused = $true
+                                Write-Log -Message "  Window focused via AppActivate" -LogFile $logFile
+                            } catch {}
+                        }
+
+                        Start-Sleep -Milliseconds 800
+
+                        # TAB to password field, type password, press Enter
+                        [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
+                        Start-Sleep -Milliseconds 300
+                        [System.Windows.Forms.SendKeys]::SendWait($password)
+                        Start-Sleep -Milliseconds 300
+                        [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+
+                        Write-Log -Message "  Credentials typed" -LogFile $logFile
+                    } else {
+                        # Check for NLA credential prompt (local dialog)
+                        $credWin = [RdpUIAutomation]::WaitForWindowWithEditsByPid($proc.Id, 5000)
+                        if ($null -ne $credWin) {
+                            Write-Log -Message "  NLA credential prompt detected" -LogFile $logFile
+                            [RdpUIAutomation]::FillCredentials($credWin, $username, $password) | Out-Null
+                            Start-Sleep -Milliseconds 500
+                            $clicked = [RdpUIAutomation]::ClickButton($credWin, "OK")
+                            if (-not $clicked) { [RdpUIAutomation]::ClickFirstActionButton($credWin) | Out-Null }
+                            Write-Log -Message "  Credentials submitted" -LogFile $logFile
+                        } else {
+                            Write-Log -Message "  No session or credential prompt found" -LogFile $logFile -Level "WARN"
+                        }
+                    }
+
+                    # Phase 3: Second security warning after auth
+                    Start-Sleep -Milliseconds 1000
+                    $secWin2 = [RdpUIAutomation]::WaitForWindowTitleByPid($proc.Id, $securityTitles, 3000)
+                    if ($null -ne $secWin2) {
+                        [RdpUIAutomation]::ClickButton($secWin2, "Yes") | Out-Null
+                        Write-Log -Message "  Second security warning dismissed" -LogFile $logFile
+                    }
+                }
+
                 $launched++
             } else {
-                Write-Log -Message "  FAILED: Could not start mstsc" -LogFile $logFile -Level "ERROR"
+                Write-Log -Message "  FAILED: Could not start mstsc for $server" -LogFile $logFile -Level "ERROR"
                 $failed++
             }
         }
         catch {
-            Write-Log -Message "  FAILED: $($_.Exception.Message)" -LogFile $logFile -Level "ERROR"
+            Write-Log -Message "  FAILED: $server - $($_.Exception.Message)" -LogFile $logFile -Level "ERROR"
             $failed++
         }
 
-        Start-Sleep -Seconds 2
+        Start-Sleep -Seconds 5
     }
 
-    # Wait for all sessions to fully connect
-    Write-Log -Message "Waiting 15s for sessions to stabilize..." -LogFile $logFile
-    Start-Sleep -Seconds 15
-
-    # Tile all mstsc windows using Windows API
-    Invoke-TileWindows -Processes $processes
-
-    # Summary
     Write-Log -Message "==========================================" -LogFile $logFile
     Write-Log -Message "Complete: $launched launched, $failed failed" -LogFile $logFile
     Write-Log -Message "==========================================" -LogFile $logFile
+
+    if ($failed -gt 0) { exit 1 }
 }
 catch {
     Write-Log -Message "FATAL: $($_.Exception.Message)" -LogFile $logFile -Level "FATAL"

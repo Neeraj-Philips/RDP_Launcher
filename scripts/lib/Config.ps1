@@ -134,7 +134,7 @@ function Get-ValidatedServers {
         }
     }
 
-    return $valid
+    return ,$valid
 }
 
 # ===== CREDENTIAL LOADING =====
@@ -215,7 +215,7 @@ function New-RdpFile {
 full address:s:$Server
 username:s:$Username
 prompt for credentials:i:$promptVal
-authentication level:i:2
+authentication level:i:0
 enablecredsspsupport:i:1
 use multimon:i:0
 screen mode id:i:$screenMode

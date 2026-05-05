@@ -28,7 +28,7 @@ Initialize-Directories
 
 # ===== LOAD CONFIG =====
 $jumpServer = ""
-$servers = Get-ValidatedServers -Path $serverFile -LogFile $logFile
+[array]$servers = Get-ValidatedServers -Path $serverFile -LogFile $logFile
 if ($servers.Count -gt 0) {
     $jumpServer = $servers[0]
 }
@@ -85,6 +85,9 @@ if ($password) {
     $netPassword = $cred.GetNetworkCredential().Password
     $netUser = $cred.UserName
 }
+
+# Disconnect any existing connection first (avoids error 1219)
+try { & net use "\\$jumpServer\C`$" /delete 2>&1 | Out-Null } catch {}
 
 # Connect with credentials
 $netResult = & net use "\\$jumpServer\C`$" /user:$netUser $netPassword 2>&1
@@ -189,109 +192,19 @@ foreach ($dir in @("logs", "rdp_sessions")) {
 # ===== CLEANUP NET USE =====
 & net use "\\$jumpServer\C`$" /delete 2>&1 | Out-Null
 
-# ===== REMOTE LAUNCH =====
-Write-Host ""
-Write-Host "Launching RDP Grid on jump server..." -ForegroundColor Cyan
-
-$remoteLaunchScript = "C:\RDP_Launcher\scripts\rdp-grid.ps1"
-$launched = $false
-
-# Try Invoke-Command (WinRM / PSRemoting)
-try {
-    $secPass = ConvertTo-SecureString $netPassword -AsPlainText -Force
-    $psCred = New-Object System.Management.Automation.PSCredential($netUser, $secPass)
-
-    Invoke-Command -ComputerName $jumpServer -Credential $psCred -ScriptBlock {
-        Start-Process "powershell.exe" -ArgumentList @(
-            "-ExecutionPolicy", "Bypass",
-            "-File", "C:\RDP_Launcher\scripts\rdp-grid.ps1"
-        ) -WindowStyle Normal
-    } -ErrorAction Stop
-
-    $launched = $true
-    Write-Host "  Launched via PSRemoting" -ForegroundColor Green
-    Write-Log -Message "Remote launch via PSRemoting succeeded" -LogFile $logFile
-}
-catch {
-    Write-Host "  PSRemoting failed: $($_.Exception.Message)" -ForegroundColor Yellow
-    Write-Log -Message "PSRemoting failed: $($_.Exception.Message)" -LogFile $logFile -Level "WARN"
-}
-
-# Fallback: PsExec
-if (-not $launched) {
-    $psexec = Get-Command "psexec" -ErrorAction SilentlyContinue
-    if ($null -eq $psexec) {
-        $psexec = Get-Command "psexec64" -ErrorAction SilentlyContinue
-    }
-    if ($null -ne $psexec) {
-        Write-Host "  Trying PsExec..." -ForegroundColor Gray
-        try {
-            & $psexec.Source "\\$jumpServer" -u $netUser -p $netPassword -d -i `
-                powershell.exe -ExecutionPolicy Bypass -File $remoteLaunchScript 2>&1 | Out-Null
-
-            if ($LASTEXITCODE -eq 0) {
-                $launched = $true
-                Write-Host "  Launched via PsExec" -ForegroundColor Green
-                Write-Log -Message "Remote launch via PsExec succeeded" -LogFile $logFile
-            }
-        }
-        catch {
-            Write-Host "  PsExec failed: $($_.Exception.Message)" -ForegroundColor Yellow
-            Write-Log -Message "PsExec failed: $($_.Exception.Message)" -LogFile $logFile -Level "WARN"
-        }
-    }
-}
-
-# Fallback: schtasks
-if (-not $launched) {
-    Write-Host "  Trying schtasks..." -ForegroundColor Gray
-    try {
-        $taskName = "RDP_Launcher_Grid"
-        & schtasks /Delete /S $jumpServer /U $netUser /P $netPassword /TN $taskName /F 2>&1 | Out-Null
-
-        & schtasks /Create /S $jumpServer /U $netUser /P $netPassword `
-            /TN $taskName `
-            /TR "powershell.exe -ExecutionPolicy Bypass -WindowStyle Normal -File $remoteLaunchScript" `
-            /SC ONCE /ST 00:00 /F /IT 2>&1 | Out-Null
-
-        if ($LASTEXITCODE -eq 0) {
-            & schtasks /Run /S $jumpServer /U $netUser /P $netPassword /TN $taskName 2>&1 | Out-Null
-            $launched = $true
-            Write-Host "  Launched via schtasks" -ForegroundColor Green
-            Write-Log -Message "Remote launch via schtasks succeeded" -LogFile $logFile
-        } else {
-            Write-Host "  schtasks create failed" -ForegroundColor Yellow
-        }
-    }
-    catch {
-        Write-Host "  schtasks failed: $($_.Exception.Message)" -ForegroundColor Yellow
-        Write-Log -Message "schtasks failed: $($_.Exception.Message)" -LogFile $logFile -Level "WARN"
-    }
-}
-
-if (-not $launched) {
-    Write-Host ""
-    Write-Host "  Could not auto-launch remotely." -ForegroundColor Yellow
-    Write-Host "  Manual steps on the jump server:" -ForegroundColor White
-    Write-Host "    1. Open C:\RDP_Launcher" -ForegroundColor White
-    Write-Host "    2. Double-click launch-grid.bat" -ForegroundColor White
-    Write-Log -Message "Remote launch failed - manual intervention required" -LogFile $logFile -Level "WARN"
-}
-
 # ===== SUMMARY =====
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-if ($errors -eq 0 -and $launched) {
-    Write-Host "  Deployed and launched! ($copied files)" -ForegroundColor Green
-    Write-Log -Message "Deploy complete: $copied files, remote launched" -LogFile $logFile
-} elseif ($errors -eq 0) {
+if ($errors -eq 0) {
     Write-Host "  Deployed successfully! ($copied files)" -ForegroundColor Green
-    Write-Host "  Auto-launch failed - run manually on jump server" -ForegroundColor Yellow
-    Write-Log -Message "Deploy complete: $copied files, manual launch needed" -LogFile $logFile
+    Write-Log -Message "Deploy complete: $copied files" -LogFile $logFile
 } else {
     Write-Host "  Deployed with $errors error(s) ($copied files copied)" -ForegroundColor Yellow
     Write-Log -Message "Deploy complete with errors: $copied ok, $errors failed" -LogFile $logFile -Level "WARN"
 }
 Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  Now RDP into $jumpServer and run:" -ForegroundColor White
+Write-Host "    C:\RDP_Launcher\launch-grid.bat" -ForegroundColor White
 Write-Host ""
 Read-Host "Press Enter to close"
