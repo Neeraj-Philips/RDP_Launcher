@@ -1,6 +1,7 @@
 # Credentials — never commit
 config/credentials.txt
 config/servers.txt
+config/user.txt
 
 # Generated RDP session files
 rdp_sessions/

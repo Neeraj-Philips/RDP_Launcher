@@ -1,0 +1,13 @@
+# ============================================
+# Username Configuration
+# ============================================
+# Enter your domain\username on the first non-comment line.
+# This is used by all RDP scripts.
+#
+# Examples:
+#   DOMAIN\admin
+#   mycompany\john.doe
+#   localuser
+# ============================================
+
+# DOMAIN\username

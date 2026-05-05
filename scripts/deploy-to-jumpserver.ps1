@@ -2,8 +2,8 @@
 # Deploy RDP Launcher to Jump Server
 # ============================================
 # Copies the tool to the jump server via the
-# existing RDP session's mapped drive, or via
-# UNC path / robocopy.
+# admin share (\\server\C$). Uses Windows
+# Credential Manager or interactive prompt.
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File scripts\deploy-to-jumpserver.ps1
@@ -11,31 +11,42 @@
 
 #Requires -Version 5.1
 
-$projectRoot = Split-Path $PSScriptRoot -Parent
+$ErrorActionPreference = "Stop"
+
+# ===== LOAD SHARED CONFIG =====
+$scriptDir = $PSScriptRoot
+. (Join-Path $scriptDir "lib\Config.ps1")
+
+$projectRoot = Split-Path $scriptDir -Parent
 $configDir   = Join-Path $projectRoot "config"
-$credFile    = Join-Path $configDir "credentials.txt"
 $serverFile  = Join-Path $configDir "servers.txt"
 $jumpServersFile = Join-Path $configDir "jumpserver-servers.txt"
+$logDir      = Join-Path $projectRoot "logs"
+$logFile     = Join-Path $logDir "deploy.log"
+
+Initialize-Directories
 
 # ===== LOAD CONFIG =====
 $jumpServer = ""
-if (Test-Path $serverFile) {
-    $jumpServer = @(Get-Content $serverFile |
-        Where-Object { $_ -and $_ -notmatch "^\s*#" } |
-        ForEach-Object { $_.Trim() }) | Select-Object -First 1
+$servers = Get-ValidatedServers -Path $serverFile -LogFile $logFile
+if ($servers.Count -gt 0) {
+    $jumpServer = $servers[0]
 }
 
-$username = ""; $password = ""
-if (Test-Path $credFile) {
-    Get-Content $credFile | ForEach-Object {
-        $line = $_.Trim()
-        if ($line -match "^Username\s*=\s*(.+)$") { $username = $Matches[1].Trim() }
-        if ($line -match "^Password\s*=\s*(.+)$") { $password = $Matches[1].Trim() }
-    }
-}
+$creds = Get-ConfiguredCredentials
+$username = $creds.Username
+$password = $creds.Password
 
 if (-not $jumpServer) {
-    Write-Host "ERROR: No jump server in config/servers.txt" -ForegroundColor Red
+    Write-Host "ERROR: No jump server configured in config/servers.txt" -ForegroundColor Red
+    Write-Log -Message "No jump server in servers.txt" -LogFile $logFile -Level "ERROR"
+    Read-Host "Press Enter to exit"
+    exit 1
+}
+
+if (-not $username) {
+    Write-Host "ERROR: No username configured in config/user.txt" -ForegroundColor Red
+    Write-Log -Message "No username in user.txt" -LogFile $logFile -Level "ERROR"
     Read-Host "Press Enter to exit"
     exit 1
 }
@@ -50,25 +61,49 @@ Write-Host "  Username    : $username"
 Write-Host "  Source      : $projectRoot"
 Write-Host ""
 
+Write-Log -Message "Deploy started: $jumpServer as $username" -LogFile $logFile
+
 # ===== REMOTE DESTINATION =====
-$remotePath = "\\$jumpServer\C$\RDP_Launcher"
+$remotePath = "\\$jumpServer\C`$\RDP_Launcher"
 
 Write-Host "Deploy to: $remotePath" -ForegroundColor Yellow
 Write-Host ""
 
 # ===== CONNECT TO REMOTE SHARE =====
-Write-Host "Connecting to \\$jumpServer\C$..." -ForegroundColor Gray
+Write-Host "Connecting to \\$jumpServer\C`$..." -ForegroundColor Gray
 
-# Store credential for net use
-$secPass = ConvertTo-SecureString $password -AsPlainText -Force
-$cred = New-Object System.Management.Automation.PSCredential($username, $secPass)
-
-# Try net use with credentials
-$netResult = & net use "\\$jumpServer\C$" /user:$username $password 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "WARNING: net use failed, trying without auth..." -ForegroundColor Yellow
-    Write-Host $netResult -ForegroundColor Gray
+# Use password from config, or prompt if not set
+if ($password) {
+    $netUser = $username
+    $netPassword = $password
+} else {
+    $cred = Get-Credential -UserName $username -Message "Enter credentials for $jumpServer deployment"
+    if ($null -eq $cred) {
+        Write-Host "Cancelled." -ForegroundColor Yellow
+        exit 0
+    }
+    $netPassword = $cred.GetNetworkCredential().Password
+    $netUser = $cred.UserName
 }
+
+# Connect with credentials
+$netResult = & net use "\\$jumpServer\C`$" /user:$netUser $netPassword 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "WARNING: net use with credentials failed, trying current session..." -ForegroundColor Yellow
+    Write-Log -Message "net use with creds failed, trying without" -LogFile $logFile -Level "WARN"
+
+    $netResult = & net use "\\$jumpServer\C`$" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Cannot connect to \\$jumpServer\C`$" -ForegroundColor Red
+        Write-Host $netResult -ForegroundColor Gray
+        Write-Log -Message "net use failed completely: $netResult" -LogFile $logFile -Level "ERROR"
+        Read-Host "Press Enter to exit"
+        exit 1
+    }
+}
+
+Write-Host "  Connected" -ForegroundColor Green
+Write-Log -Message "Connected to \\$jumpServer\C`$" -LogFile $logFile
 
 # ===== COPY FILES =====
 Write-Host "Copying files..." -ForegroundColor Gray
@@ -77,16 +112,17 @@ $filesToCopy = @(
     @{ Src = "launch-rdp.bat";                  Dst = "launch-rdp.bat" }
     @{ Src = "launch-grid.bat";                 Dst = "launch-grid.bat" }
     @{ Src = "README.md";                       Dst = "README.md" }
-    @{ Src = ".gitignore";                      Dst = ".gitignore" }
     @{ Src = "scripts\rdp-gui.ps1";             Dst = "scripts\rdp-gui.ps1" }
     @{ Src = "scripts\rdp-auto.ps1";            Dst = "scripts\rdp-auto.ps1" }
     @{ Src = "scripts\rdp-grid.ps1";            Dst = "scripts\rdp-grid.ps1" }
+    @{ Src = "scripts\lib\Config.ps1";          Dst = "scripts\lib\Config.ps1" }
     @{ Src = "scripts\lib\RdpUIAutomation.cs";  Dst = "scripts\lib\RdpUIAutomation.cs" }
-    @{ Src = "config\credentials.example.txt";  Dst = "config\credentials.example.txt" }
-    @{ Src = "config\servers.example.txt";       Dst = "config\servers.example.txt" }
+    @{ Src = "config\servers.example.txt";      Dst = "config\servers.example.txt" }
+    @{ Src = "config\user.txt";                 Dst = "config\user.txt" }
 )
 
 $errors = 0
+$copied = 0
 foreach ($f in $filesToCopy) {
     $src = Join-Path $projectRoot $f.Src
     $dst = Join-Path $remotePath $f.Dst
@@ -103,45 +139,38 @@ foreach ($f in $filesToCopy) {
         }
         Copy-Item -Path $src -Destination $dst -Force
         Write-Host "  OK: $($f.Src)" -ForegroundColor Green
-    } catch {
+        $copied++
+    }
+    catch {
         Write-Host "  FAIL: $($f.Src) - $($_.Exception.Message)" -ForegroundColor Red
+        Write-Log -Message "Copy failed: $($f.Src) - $($_.Exception.Message)" -LogFile $logFile -Level "ERROR"
         $errors++
     }
 }
 
-# ===== DEPLOY CREDENTIALS =====
-Write-Host ""
-Write-Host "Deploying credentials..." -ForegroundColor Gray
-
-$remoteCredFile = Join-Path $remotePath "config\credentials.txt"
-$remoteCredDir  = Split-Path $remoteCredFile -Parent
-try {
-    if (-not (Test-Path $remoteCredDir)) {
-        New-Item -ItemType Directory -Path $remoteCredDir -Force | Out-Null
-    }
-    # Copy same credentials (same domain user for target servers)
-    Copy-Item -Path $credFile -Destination $remoteCredFile -Force
-    Write-Host "  OK: credentials.txt" -ForegroundColor Green
-} catch {
-    Write-Host "  FAIL: credentials.txt - $($_.Exception.Message)" -ForegroundColor Red
-    $errors++
-}
-
 # ===== DEPLOY JUMP SERVER'S SERVER LIST =====
+Write-Host ""
 Write-Host "Deploying server list for jump server..." -ForegroundColor Gray
 
 $remoteServerFile = Join-Path $remotePath "config\servers.txt"
 if (Test-Path $jumpServersFile) {
     try {
+        $remoteConfigDir = Join-Path $remotePath "config"
+        if (-not (Test-Path $remoteConfigDir)) {
+            New-Item -ItemType Directory -Path $remoteConfigDir -Force | Out-Null
+        }
         Copy-Item -Path $jumpServersFile -Destination $remoteServerFile -Force
         Write-Host "  OK: servers.txt (from jumpserver-servers.txt)" -ForegroundColor Green
-    } catch {
+        $copied++
+    }
+    catch {
         Write-Host "  FAIL: servers.txt - $($_.Exception.Message)" -ForegroundColor Red
+        Write-Log -Message "Server list deploy failed: $($_.Exception.Message)" -LogFile $logFile -Level "ERROR"
         $errors++
     }
 } else {
     Write-Host "  SKIP: config/jumpserver-servers.txt not found" -ForegroundColor Yellow
-    Write-Host "  You'll need to edit config\servers.txt on the jump server manually." -ForegroundColor Yellow
+    Write-Host "  Edit config\servers.txt on the jump server manually." -ForegroundColor Yellow
 }
 
 # ===== CREATE EMPTY DIRS =====
@@ -150,26 +179,29 @@ foreach ($dir in @("logs", "rdp_sessions")) {
     if (-not (Test-Path $remoteDir)) {
         try {
             New-Item -ItemType Directory -Path $remoteDir -Force | Out-Null
-        } catch {}
+        }
+        catch {
+            Write-Log -Message "Failed to create $dir on remote: $($_.Exception.Message)" -LogFile $logFile -Level "WARN"
+        }
     }
 }
 
 # ===== CLEANUP NET USE =====
-& net use "\\$jumpServer\C$" /delete 2>&1 | Out-Null
+& net use "\\$jumpServer\C`$" /delete 2>&1 | Out-Null
 
 # ===== REMOTE LAUNCH =====
 Write-Host ""
 Write-Host "Launching RDP Grid on jump server..." -ForegroundColor Cyan
 
 $remoteLaunchScript = "C:\RDP_Launcher\scripts\rdp-grid.ps1"
+$launched = $false
 
 # Try Invoke-Command (WinRM / PSRemoting)
-$launched = $false
 try {
-    $secPass = ConvertTo-SecureString $password -AsPlainText -Force
-    $cred = New-Object System.Management.Automation.PSCredential($username, $secPass)
+    $secPass = ConvertTo-SecureString $netPassword -AsPlainText -Force
+    $psCred = New-Object System.Management.Automation.PSCredential($netUser, $secPass)
 
-    Invoke-Command -ComputerName $jumpServer -Credential $cred -ScriptBlock {
+    Invoke-Command -ComputerName $jumpServer -Credential $psCred -ScriptBlock {
         Start-Process "powershell.exe" -ArgumentList @(
             "-ExecutionPolicy", "Bypass",
             "-File", "C:\RDP_Launcher\scripts\rdp-grid.ps1"
@@ -177,51 +209,63 @@ try {
     } -ErrorAction Stop
 
     $launched = $true
-    Write-Host "  Launched via PSRemoting (Invoke-Command)" -ForegroundColor Green
-} catch {
+    Write-Host "  Launched via PSRemoting" -ForegroundColor Green
+    Write-Log -Message "Remote launch via PSRemoting succeeded" -LogFile $logFile
+}
+catch {
     Write-Host "  PSRemoting failed: $($_.Exception.Message)" -ForegroundColor Yellow
-    Write-Host "  Trying PsExec..." -ForegroundColor Gray
+    Write-Log -Message "PSRemoting failed: $($_.Exception.Message)" -LogFile $logFile -Level "WARN"
 }
 
-# Fallback: PsExec (if installed)
+# Fallback: PsExec
 if (-not $launched) {
     $psexec = Get-Command "psexec" -ErrorAction SilentlyContinue
     if ($null -eq $psexec) {
         $psexec = Get-Command "psexec64" -ErrorAction SilentlyContinue
     }
     if ($null -ne $psexec) {
+        Write-Host "  Trying PsExec..." -ForegroundColor Gray
         try {
-            & $psexec.Source "\\$jumpServer" -u $username -p $password -d -i `
-                powershell.exe -ExecutionPolicy Bypass -File "C:\RDP_Launcher\scripts\rdp-grid.ps1"
-            $launched = $true
-            Write-Host "  Launched via PsExec" -ForegroundColor Green
-        } catch {
+            & $psexec.Source "\\$jumpServer" -u $netUser -p $netPassword -d -i `
+                powershell.exe -ExecutionPolicy Bypass -File $remoteLaunchScript 2>&1 | Out-Null
+
+            if ($LASTEXITCODE -eq 0) {
+                $launched = $true
+                Write-Host "  Launched via PsExec" -ForegroundColor Green
+                Write-Log -Message "Remote launch via PsExec succeeded" -LogFile $logFile
+            }
+        }
+        catch {
             Write-Host "  PsExec failed: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Log -Message "PsExec failed: $($_.Exception.Message)" -LogFile $logFile -Level "WARN"
         }
     }
 }
 
-# Fallback: schtasks (create a one-time scheduled task, interactive)
+# Fallback: schtasks
 if (-not $launched) {
     Write-Host "  Trying schtasks..." -ForegroundColor Gray
     try {
         $taskName = "RDP_Launcher_Grid"
-        # Delete old task if exists
-        & schtasks /Delete /S $jumpServer /U $username /P $password /TN $taskName /F 2>&1 | Out-Null
-        # Create task that runs interactively in the user's session
-        & schtasks /Create /S $jumpServer /U $username /P $password `
+        & schtasks /Delete /S $jumpServer /U $netUser /P $netPassword /TN $taskName /F 2>&1 | Out-Null
+
+        & schtasks /Create /S $jumpServer /U $netUser /P $netPassword `
             /TN $taskName `
-            /TR "powershell.exe -ExecutionPolicy Bypass -WindowStyle Normal -File C:\RDP_Launcher\scripts\rdp-grid.ps1" `
+            /TR "powershell.exe -ExecutionPolicy Bypass -WindowStyle Normal -File $remoteLaunchScript" `
             /SC ONCE /ST 00:00 /F /IT 2>&1 | Out-Null
+
         if ($LASTEXITCODE -eq 0) {
-            & schtasks /Run /S $jumpServer /U $username /P $password /TN $taskName 2>&1 | Out-Null
+            & schtasks /Run /S $jumpServer /U $netUser /P $netPassword /TN $taskName 2>&1 | Out-Null
             $launched = $true
-            Write-Host "  Launched via schtasks (interactive)" -ForegroundColor Green
+            Write-Host "  Launched via schtasks" -ForegroundColor Green
+            Write-Log -Message "Remote launch via schtasks succeeded" -LogFile $logFile
         } else {
             Write-Host "  schtasks create failed" -ForegroundColor Yellow
         }
-    } catch {
+    }
+    catch {
         Write-Host "  schtasks failed: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Log -Message "schtasks failed: $($_.Exception.Message)" -LogFile $logFile -Level "WARN"
     }
 }
 
@@ -231,19 +275,22 @@ if (-not $launched) {
     Write-Host "  Manual steps on the jump server:" -ForegroundColor White
     Write-Host "    1. Open C:\RDP_Launcher" -ForegroundColor White
     Write-Host "    2. Double-click launch-grid.bat" -ForegroundColor White
+    Write-Log -Message "Remote launch failed - manual intervention required" -LogFile $logFile -Level "WARN"
 }
 
 # ===== SUMMARY =====
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
 if ($errors -eq 0 -and $launched) {
-    Write-Host "  Deployed and launched!" -ForegroundColor Green
-    Write-Host "  Grid sessions starting on $jumpServer" -ForegroundColor White
+    Write-Host "  Deployed and launched! ($copied files)" -ForegroundColor Green
+    Write-Log -Message "Deploy complete: $copied files, remote launched" -LogFile $logFile
 } elseif ($errors -eq 0) {
-    Write-Host "  Deployed successfully!" -ForegroundColor Green
+    Write-Host "  Deployed successfully! ($copied files)" -ForegroundColor Green
     Write-Host "  Auto-launch failed - run manually on jump server" -ForegroundColor Yellow
+    Write-Log -Message "Deploy complete: $copied files, manual launch needed" -LogFile $logFile
 } else {
-    Write-Host "  Deployed with $errors error(s)" -ForegroundColor Yellow
+    Write-Host "  Deployed with $errors error(s) ($copied files copied)" -ForegroundColor Yellow
+    Write-Log -Message "Deploy complete with errors: $copied ok, $errors failed" -LogFile $logFile -Level "WARN"
 }
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""

@@ -243,10 +243,22 @@ public class RdpUIAutomation
     // ===== WINDOW HANDLE =====
 
     /// <summary>Get the native window handle (HWND) for a PID's top-level window.</summary>
+    /// <remarks>Uses case-insensitive matching to handle Windows version differences.</remarks>
     public static IntPtr GetWindowHandleByPid(int pid, int timeoutMs)
     {
         var root = AutomationElement.RootElement;
         var deadline = DateTime.Now.AddMilliseconds(timeoutMs);
+
+        // Patterns to skip (transient dialogs) - case-insensitive
+        string[] skipPatterns = new string[] {
+            "security warning",
+            "certificate",
+            "connecting to",
+            "configuring",
+            "securing",
+            "initiating"
+        };
+
         while (DateTime.Now < deadline)
         {
             try
@@ -258,16 +270,23 @@ public class RdpUIAutomation
                     try
                     {
                         string name = w.Current.Name;
-                        // Skip progress/connecting dialogs, find the actual session window
-                        if (!string.IsNullOrEmpty(name) &&
-                            !name.Contains("security warning") &&
-                            !name.Contains("Connecting to") &&
-                            !name.Contains("Configuring") &&
-                            !name.Contains("Securing"))
+                        if (string.IsNullOrEmpty(name)) continue;
+
+                        // Skip transient/progress dialogs
+                        bool skip = false;
+                        string lower = name.ToLowerInvariant();
+                        foreach (string pattern in skipPatterns)
                         {
-                            IntPtr hwnd = new IntPtr(w.Current.NativeWindowHandle);
-                            if (hwnd != IntPtr.Zero) return hwnd;
+                            if (lower.Contains(pattern))
+                            {
+                                skip = true;
+                                break;
+                            }
                         }
+                        if (skip) continue;
+
+                        IntPtr hwnd = new IntPtr(w.Current.NativeWindowHandle);
+                        if (hwnd != IntPtr.Zero) return hwnd;
                     }
                     catch { }
                 }

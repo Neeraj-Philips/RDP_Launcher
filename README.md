@@ -1,15 +1,24 @@
 # RDP Launcher
 
-Automated RDP launcher with UI Automation. Dismisses security warnings and auto-types login credentials.
+Automated RDP session launcher with grid layout and secure credential management via Windows Credential Manager.
+
+## Features
+
+- **Secure credentials** — uses Windows Credential Manager (`cmdkey`), no plaintext files
+- **Multi-monitor grid** — auto-arranges sessions across all monitors
+- **Input validation** — validates all server IPs/hostnames before connecting
+- **Retry logic** — automatic retries on launch failures
+- **Structured logging** — timestamped logs with severity levels
+- **Two-tier deployment** — laptop → jump server → target servers
 
 ## Two-Tier Setup (Jump Server)
 
 ```
 Your Laptop                    Jump Server (192.168.58.23)         Target Servers
 +-----------+    RDP           +-------------------------+   RDP   +----------------+
-| launch-   | -------->        | RDP Launcher (copy 2)   | ------> | 172.17.35.49   |
+| launch-   | -------->        | RDP Launcher (copy)     | ------> | 172.17.35.49   |
 | rdp.bat   |  auto-login      | launch-grid.bat         |         | 10.0.0.50      |
-+-----------+                  | (dual monitor grid)     |         | 10.0.0.51      |
++-----------+                  | (multi-monitor grid)    |         | 10.0.0.51      |
                                +-------------------------+         +----------------+
 ```
 
@@ -18,7 +27,7 @@ Your Laptop                    Jump Server (192.168.58.23)         Target Server
 - Run `launch-rdp.bat` to connect to the jump server
 
 **Step 2: On the jump server**
-- Copy this entire folder to the jump server
+- Run `deploy.bat` to copy the tool automatically, OR copy manually
 - Edit `config/servers.txt` with the target server IPs
 - Run `launch-grid.bat` to launch all targets in a grid layout
 
@@ -26,24 +35,27 @@ Your Laptop                    Jump Server (192.168.58.23)         Target Server
 
 ```
 RDP_Launcher/
-+-- config/
-|   +-- servers.txt                # Server list (edit per machine)
-|   +-- credentials.txt            # Login credentials
-|   +-- jumpserver-servers.txt     # Reference: target servers for jump server
-|   +-- servers.example.txt        # Template
-|   +-- credentials.example.txt    # Template
-+-- scripts/
-|   +-- rdp-gui.ps1                # GUI dashboard
-|   +-- rdp-auto.ps1               # Headless launcher (Task Scheduler)
-|   +-- rdp-grid.ps1               # Dual-monitor grid launcher
-|   +-- lib/
-|       +-- RdpUIAutomation.cs     # .NET UI Automation helper
-+-- logs/                          # Runtime logs (gitignored)
-+-- rdp_sessions/                  # Generated .rdp files (gitignored)
-+-- launch-rdp.bat                 # GUI launcher
-+-- launch-grid.bat                # Grid launcher
-+-- .gitignore
-+-- README.md
+├── config/
+│   ├── servers.txt              # Server list (edit per machine) [gitignored]
+│   ├── servers.example.txt      # Template
+│   ├── user.txt                 # Username (domain\user) [gitignored]
+│   ├── user.example.txt         # Template
+│   └── jumpserver-servers.txt   # Target servers for jump server deploy
+├── scripts/
+│   ├── rdp-gui.ps1              # GUI dashboard
+│   ├── rdp-auto.ps1             # Headless launcher (Task Scheduler)
+│   ├── rdp-grid.ps1             # Multi-monitor grid launcher
+│   ├── deploy-to-jumpserver.ps1 # Deployment orchestrator
+│   └── lib/
+│       ├── Config.ps1           # Shared configuration module
+│       └── RdpUIAutomation.cs   # .NET UI Automation helper
+├── logs/                        # Runtime logs [gitignored]
+├── rdp_sessions/                # Generated .rdp files [gitignored]
+├── launch-rdp.bat               # GUI launcher
+├── launch-grid.bat              # Grid launcher
+├── deploy.bat                   # Deploy to jump server
+├── .gitignore
+└── README.md
 ```
 
 ## Quick Start
@@ -51,23 +63,25 @@ RDP_Launcher/
 1. Copy the example configs:
    ```
    copy config\servers.example.txt config\servers.txt
-   copy config\credentials.example.txt config\credentials.txt
+   copy config\user.example.txt config\user.txt
    ```
-2. Edit `config\servers.txt` - add server IPs (one per line)
-3. Edit `config\credentials.txt` - set username and password
+2. Edit `config\user.txt` — set your `domain\username`
+3. Edit `config\servers.txt` — add server IPs (one per line)
 4. Double-click `launch-rdp.bat` (GUI) or `launch-grid.bat` (grid)
+5. On first connect, you'll be prompted for credentials (stored securely in Windows Credential Manager)
 
 ## Scripts
 
 | Script | Purpose | Use on |
 |--------|---------|--------|
-| `rdp-gui.ps1` | GUI with server list + credential fields | Laptop |
+| `rdp-gui.ps1` | GUI with server list + credential management | Laptop |
 | `rdp-auto.ps1` | Headless, for Task Scheduler | Either |
 | `rdp-grid.ps1` | Auto-arrange across monitors | Jump server |
+| `deploy-to-jumpserver.ps1` | Deploy tool to jump server | Laptop |
 
 ### rdp-grid.ps1 - Grid Layout
 
-Detects all monitors and arranges RDP sessions in a grid:
+Detects all monitors and arranges RDP sessions in an optimal grid:
 
 ```
 Single Monitor          Dual Monitor
@@ -79,34 +93,52 @@ Single Monitor          Dual Monitor
                        +-----------+   +-----------+
 ```
 
-### Task Scheduler (rdp-auto.ps1)
+## Configuration
 
-| Setting   | Value |
-|-----------|-------|
-| Program   | `powershell.exe` |
-| Arguments | `-ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\path\to\scripts\rdp-auto.ps1"` |
-| Trigger   | At log on |
+### config/user.txt
+Single line with your domain username:
+```
+DOMAIN\username
+```
 
-## How It Works
+### config/servers.txt
+One server IP or hostname per line. Comments start with `#`:
+```
+# Production servers
+192.168.1.100
+10.0.0.50
+myserver.domain.com
+```
 
-1. Reads `config/servers.txt` and `config/credentials.txt`
-2. For each server:
-   - Stores credentials via `cmdkey`
-   - Generates `.rdp` file
-   - Launches `mstsc.exe`
-   - UI Automation clicks "Connect" on security warning
-   - Detects remote Windows login screen
-   - SendKeys types username + password + Enter
-3. Grid mode: positions windows using Win32 MoveWindow API
+Supported formats:
+- IPv4: `192.168.1.100`
+- Hostname: `server.domain.com`
+- With port: `192.168.1.100:3390`
 
-## Security Notes
+## Security
 
-- `config/credentials.txt` and `config/servers.txt` are gitignored
-- Passwords stored in plain text - keep config directory secure
-- `.example.txt` files are safe to commit as templates
+- **No plaintext passwords** — credentials stored in Windows Credential Manager
+- **Input validation** — server entries validated against IP/hostname patterns
+- **Gitignored secrets** — `user.txt`, `servers.txt`, and `credentials.txt` never committed
+- **Secure prompts** — deployment uses `Get-Credential` (masked input)
+- **No credential files deployed** — jump server uses same Credential Manager approach
 
-## Requirements
+## Logging
 
-- Windows 10/11 or Windows Server 2016+
-- PowerShell 5.1+
-- mstsc.exe (Remote Desktop Connection)
+All scripts write structured logs to `logs/`:
+- `rdp-gui.log` — GUI launcher events
+- `rdp-auto.log` — Headless launcher events
+- `rdp-grid.log` — Grid launcher events
+- `deploy.log` — Deployment events
+
+Log format: `[2026-05-04 13:57:12] [INFO] Message`
+
+## Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| "No username in config/user.txt" | Create `config/user.txt` with your `domain\user` |
+| "No valid servers" | Check `config/servers.txt` has valid IPs/hostnames |
+| Credential prompt keeps appearing | Run `cmdkey /list` to verify stored credentials |
+| Grid windows not positioning | Increase wait time or check if mstsc launched |
+| Deploy fails to connect | Verify admin share access: `net use \\server\C$` |
