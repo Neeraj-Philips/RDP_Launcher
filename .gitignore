@@ -1,0 +1,12 @@
+# Credentials — never commit
+config/credentials.txt
+config/servers.txt
+
+# Generated RDP session files
+rdp_sessions/
+
+# Logs
+logs/
+
+# Legacy files (pre-reorganization)
+rdp-auto.log

@@ -1,0 +1,5 @@
+# RDP Server List - Jump Server (connects to target servers)
+# This runs INSIDE 192.168.58.23
+# Add all target servers here
+
+172.17.35.49
