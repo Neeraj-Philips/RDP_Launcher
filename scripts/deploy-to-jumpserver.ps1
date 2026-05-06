@@ -87,7 +87,10 @@ if ($password) {
 }
 
 # Disconnect any existing connection first (avoids error 1219)
-try { & net use "\\$jumpServer\C`$" /delete 2>&1 | Out-Null } catch {}
+$oldEAP = $ErrorActionPreference
+$ErrorActionPreference = "SilentlyContinue"
+& net use "\\$jumpServer\C`$" /delete 2>&1 | Out-Null
+$ErrorActionPreference = $oldEAP
 
 # Connect with credentials
 $netResult = & net use "\\$jumpServer\C`$" /user:$netUser $netPassword 2>&1
@@ -121,7 +124,7 @@ $filesToCopy = @(
     @{ Src = "scripts\lib\Config.ps1";          Dst = "scripts\lib\Config.ps1" }
     @{ Src = "scripts\lib\RdpUIAutomation.cs";  Dst = "scripts\lib\RdpUIAutomation.cs" }
     @{ Src = "config\servers.example.txt";      Dst = "config\servers.example.txt" }
-    @{ Src = "config\user.txt";                 Dst = "config\user.txt" }
+    @{ Src = "config\jumpserver-user.txt";      Dst = "config\user.txt" }
 )
 
 $errors = 0
