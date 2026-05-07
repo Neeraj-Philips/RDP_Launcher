@@ -114,7 +114,7 @@ function Launch-RDP {
         throw "Credential setup failed for $Server"
     }
 
-    $rdpPath = New-RdpFile -Server $Server -Username $Username -Width 1920 -Height 1080 -FullScreen
+    $rdpPath = New-RdpFile -Server $Server -Username $Username -Width 1920 -Height 1080 -MultiMonitor
 
     $proc = Start-RdpProcess -RdpFilePath $rdpPath -MaxRetries 2 -LogFile $logFile
     if ($null -eq $proc) {

@@ -200,7 +200,9 @@ function New-RdpFile {
 
         [switch]$PromptForCredentials,
 
-        [switch]$FullScreen
+        [switch]$FullScreen,
+
+        [switch]$MultiMonitor
     )
 
     if (-not $OutputPath) {
@@ -209,7 +211,8 @@ function New-RdpFile {
     }
 
     $promptVal = if ($PromptForCredentials) { 1 } else { 0 }
-    $screenMode = if ($FullScreen) { 2 } else { 1 }
+    $screenMode = if ($FullScreen -or $MultiMonitor) { 2 } else { 1 }
+    $multimonVal = if ($MultiMonitor) { 1 } else { 0 }
 
     $content = @"
 full address:s:$Server
@@ -217,7 +220,7 @@ username:s:$Username
 prompt for credentials:i:$promptVal
 authentication level:i:0
 enablecredsspsupport:i:1
-use multimon:i:0
+use multimon:i:$multimonVal
 screen mode id:i:$screenMode
 desktopwidth:i:$Width
 desktopheight:i:$Height
@@ -226,6 +229,11 @@ redirectclipboard:i:1
 disable wallpaper:i:1
 allow font smoothing:i:1
 "@
+
+    # If multi-monitor, select only external monitors (skip laptop display 0)
+    if ($MultiMonitor) {
+        $content += "`nselectedmonitors:s:1,2"
+    }
 
     Set-Content -Path $OutputPath -Value $content -Encoding ASCII
     return $OutputPath

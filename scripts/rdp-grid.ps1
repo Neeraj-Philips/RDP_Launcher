@@ -1,15 +1,5 @@
 # ============================================
-# RDP Grid Launcher (Fixed Grid Mode)
-# ============================================
-# Launches RDP sessions one-by-one
-# Assigns each server to a fixed grid slot
-# Restores + positions window immediately
-# Then performs login automation
-#
-# IMPORTANT:
-# - NO fullscreen
-# - NO post-launch tiling
-# - NO bulk window movement
+# RDP Grid Launcher (STABLE TEST VERSION)
 # ============================================
 
 #Requires -Version 5.1
@@ -19,7 +9,7 @@ $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-# ===== LOAD SHARED CONFIG =====
+# ===== LOAD CONFIG =====
 $scriptDir = $PSScriptRoot
 . (Join-Path $scriptDir "lib\Config.ps1")
 
@@ -32,138 +22,118 @@ $logFile     = Join-Path $logDir     "rdp-grid.log"
 
 Initialize-Directories
 
-# ===== WIN32 WINDOW API =====
+# ===== WIN32 =====
 try {
-    Add-Type @"
+Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 
 public class WinAPI {
+    [DllImport("user32.dll")]
+    public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
 
     [DllImport("user32.dll")]
-    public static extern bool MoveWindow(
-        IntPtr hWnd,
-        int X,
-        int Y,
-        int nWidth,
-        int nHeight,
-        bool bRepaint
-    );
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
     [DllImport("user32.dll")]
-    public static extern bool ShowWindow(
-        IntPtr hWnd,
-        int nCmdShow
-    );
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
-    public static extern bool SetForegroundWindow(
-        IntPtr hWnd
-    );
+    public static extern IntPtr GetForegroundWindow();
 
     public const int SW_RESTORE = 9;
 }
 "@
 } catch {}
 
-# ===== LOAD UI AUTOMATION =====
+# ===== UI AUTOMATION =====
 $uiAutomationPath = Join-Path $scriptDir "lib\RdpUIAutomation.cs"
-
 $uiAutomationLoaded = $false
 
 if (Test-Path $uiAutomationPath) {
-
     try {
-
         $csCode = Get-Content $uiAutomationPath -Raw
-
         Add-Type -TypeDefinition $csCode -ReferencedAssemblies @(
             "UIAutomationClient",
             "UIAutomationTypes"
         ) -ErrorAction Stop
-
         $uiAutomationLoaded = $true
-
-        Write-Log -Message "UI Automation loaded" -LogFile $logFile
-
     }
     catch {
-
         if ($_.Exception.Message -match "already exists") {
             $uiAutomationLoaded = $true
-        }
-        else {
-            Write-Log -Message "UI Automation load failed: $($_.Exception.Message)" -LogFile $logFile -Level "WARN"
         }
     }
 }
 
-# ===== LOAD CREDENTIALS =====
+# ===== CREDENTIALS =====
 $creds = Get-ConfiguredCredentials
-
 $username = $creds.Username
 $password = $creds.Password
 
 if (-not $username) {
-
-    Write-Log -Message "ERROR: No username configured in config/user.txt" -LogFile $logFile -Level "ERROR"
-
+    Write-Host "No username configured"
     exit 1
 }
 
-# ===== GRID POSITIONS =====
-# Adjust for your monitor setup
-
+# ===== GRID =====
 function Get-GridPositions {
+    # Display1: 1920x1080 at X=0 (Primary, right screen)
+    # Display2: 1920x1080 at X=-1920 (left screen)
+    # 3 windows per monitor, each 960x540
 
     return @(
+        # Left monitor (Display2: starts at X=-1920)
+        @{ X = -1920; Y = 0;   W = 960; H = 540 }
+        @{ X = -960;  Y = 0;   W = 960; H = 540 }
+        @{ X = -1920; Y = 540; W = 960; H = 540 }
 
-        # Monitor 1
-        @{ X = 0;    Y = 0;    W = 950; H = 500 }
-        @{ X = 950;  Y = 0;    W = 950; H = 500 }
-
-        @{ X = 0;    Y = 500;  W = 950; H = 500 }
-        @{ X = 950;  Y = 500;  W = 950; H = 500 }
-
-        @{ X = 0;    Y = 1000; W = 950; H = 500 }
-
-        # Monitor 2
-        @{ X = 1920; Y = 0;    W = 950; H = 500 }
-        @{ X = 2870; Y = 0;    W = 950; H = 500 }
-
-        @{ X = 1920; Y = 500;  W = 950; H = 500 }
-        @{ X = 2870; Y = 500;  W = 950; H = 500 }
-
-        @{ X = 1920; Y = 1000; W = 950; H = 500 }
+        # Right monitor (Display1: starts at X=0)
+        @{ X = 0;    Y = 0;   W = 960; H = 540 }
+        @{ X = 960;  Y = 0;   W = 960; H = 540 }
+        @{ X = 0;    Y = 540; W = 960; H = 540 }
     )
+}
+
+# ===== FOCUS WINDOW =====
+function Focus-Window {
+    param([System.Diagnostics.Process]$Process)
+
+    $Process.Refresh()
+    $hwnd = $Process.MainWindowHandle
+
+    if ($hwnd -ne [IntPtr]::Zero) {
+        [WinAPI]::ShowWindow($hwnd, [WinAPI]::SW_RESTORE) | Out-Null
+        Start-Sleep -Milliseconds 200
+        [WinAPI]::SetForegroundWindow($hwnd) | Out-Null
+        Start-Sleep -Milliseconds 500
+        return $true
+    }
+
+    # Fallback: AppActivate
+    try {
+        $wshell = New-Object -ComObject WScript.Shell
+        $wshell.AppActivate($Process.Id) | Out-Null
+        Start-Sleep -Milliseconds 500
+        return $true
+    } catch {}
+
+    return $false
 }
 
 # ===== MOVE WINDOW =====
 function Move-RdpWindow {
-
-    param(
-        $Process,
-        $Position
-    )
+    param($Process, $Position)
 
     try {
-
-        $success = $false
-
-        for ($i = 0; $i -lt 10; $i++) {
-
+        for ($i = 0; $i -lt 20; $i++) {
             Start-Sleep -Milliseconds 500
-
             $Process.Refresh()
-
             $hwnd = $Process.MainWindowHandle
 
             if ($hwnd -ne 0) {
-
                 [WinAPI]::ShowWindow($hwnd, [WinAPI]::SW_RESTORE) | Out-Null
-
                 Start-Sleep -Milliseconds 300
-
                 [WinAPI]::MoveWindow(
                     $hwnd,
                     $Position.X,
@@ -172,285 +142,234 @@ function Move-RdpWindow {
                     $Position.H,
                     $true
                 ) | Out-Null
-
-                [WinAPI]::SetForegroundWindow($hwnd) | Out-Null
-
-                $success = $true
-
-                break
+                return $true
             }
         }
-
-        return $success
-    }
-    catch {
         return $false
     }
+    catch { return $false }
 }
 
 # ===== AUTO LOGIN =====
 function Invoke-AutoLogin {
-
     param(
-        [int]$ProcessId,
+        [System.Diagnostics.Process]$Process,
         [string]$Server,
         [string]$Username,
         [string]$Password
     )
 
-    if (-not $uiAutomationLoaded -or -not $Password) {
-        return
-    }
+    if (-not $uiAutomationLoaded -or -not $Password) { return }
 
-    # Security warning
     $securityTitles = @(
-        "security",
-        "certificate",
-        "trust",
-        "warning",
-        "unknown publisher",
-        "Remote Desktop Connection"
+        "security", "certificate", "trust",
+        "warning", "Remote Desktop Connection"
     )
 
-    $secWin = [RdpUIAutomation]::WaitForWindowTitleByPid(
-        $ProcessId,
-        $securityTitles,
-        10000
-    )
+    # Phase 1: Dismiss security warning(s)
+    for ($w = 0; $w -lt 3; $w++) {
+        $timeout = if ($w -eq 0) { 10000 } else { 3000 }
+        $secWin = [RdpUIAutomation]::WaitForWindowTitleByPid(
+            $Process.Id, $securityTitles, $timeout
+        )
 
-    if ($null -ne $secWin) {
-
-        $clicked = [RdpUIAutomation]::ClickButton($secWin, "Yes")
-
-        if (-not $clicked) {
-            $clicked = [RdpUIAutomation]::ClickButton($secWin, "Connect")
+        if ($null -ne $secWin) {
+            Write-Log -Message "  Warning dialog #$($w+1): '$($secWin.Current.Name)'" -LogFile $logFile
+            $clicked = [RdpUIAutomation]::ClickButton($secWin, "Yes")
+            if (-not $clicked) { $clicked = [RdpUIAutomation]::ClickButton($secWin, "Connect") }
+            if (-not $clicked) { [RdpUIAutomation]::ClickFirstActionButton($secWin) | Out-Null }
+            Write-Log -Message "  Warning dismissed" -LogFile $logFile
+            Start-Sleep -Seconds 2
+        } else {
+            break
         }
-
-        if (-not $clicked) {
-            [RdpUIAutomation]::ClickFirstActionButton($secWin) | Out-Null
-        }
-
-        Write-Log -Message "  Security warning dismissed" -LogFile $logFile
-
-        Start-Sleep -Milliseconds 1500
     }
 
-    # Wait for session
+    # Phase 2: Wait for session window
     Start-Sleep -Seconds 3
 
     $sessionTitles = @($Server, "Remote Desktop")
-
     $sessionWin = [RdpUIAutomation]::WaitForWindowTitleByPid(
-        $ProcessId,
-        $sessionTitles,
-        10000
+        $Process.Id, $sessionTitles, 10000
     )
 
     if ($null -ne $sessionWin) {
-
-        Write-Log -Message "  Session connected" -LogFile $logFile
-
+        Write-Log -Message "  Session connected: '$($sessionWin.Current.Name)'" -LogFile $logFile
         Start-Sleep -Seconds 2
 
-        $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+        # FOCUS the RDP window before sending keys
+        $focused = Focus-Window -Process $Process
+        Write-Log -Message "  Window focused: $focused" -LogFile $logFile
 
-        if ($null -ne $proc) {
-
-            $proc.Refresh()
-
-            $hwnd = $proc.MainWindowHandle
-
-            if ($hwnd -ne [IntPtr]::Zero) {
-
-                [WinAPI]::SetForegroundWindow($hwnd) | Out-Null
-
-                Start-Sleep -Milliseconds 800
-
-                [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
-
-                Start-Sleep -Milliseconds 300
-
-                [System.Windows.Forms.SendKeys]::SendWait($Password)
-
-                Start-Sleep -Milliseconds 300
-
-                [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
-
-                Write-Log -Message "  Credentials typed" -LogFile $logFile
-            }
+        if ($focused) {
+            Start-Sleep -Milliseconds 500
+            [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
+            Start-Sleep -Milliseconds 300
+            [System.Windows.Forms.SendKeys]::SendWait($Password)
+            Start-Sleep -Milliseconds 300
+            [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+            Write-Log -Message "  Credentials typed" -LogFile $logFile
+        } else {
+            Write-Log -Message "  Could not focus window - credentials not sent" -LogFile $logFile -Level "WARN"
+        }
+    } else {
+        # NLA prompt fallback
+        $credWin = [RdpUIAutomation]::WaitForWindowWithEditsByPid($Process.Id, 5000)
+        if ($null -ne $credWin) {
+            Write-Log -Message "  NLA prompt detected" -LogFile $logFile
+            [RdpUIAutomation]::FillCredentials($credWin, $Username, $Password) | Out-Null
+            Start-Sleep -Milliseconds 500
+            $clicked = [RdpUIAutomation]::ClickButton($credWin, "OK")
+            if (-not $clicked) { [RdpUIAutomation]::ClickFirstActionButton($credWin) | Out-Null }
+            Write-Log -Message "  Credentials submitted" -LogFile $logFile
+        } else {
+            Write-Log -Message "  No session or prompt found" -LogFile $logFile -Level "WARN"
         }
     }
-    else {
 
-        # NLA prompt
-        $credWin = [RdpUIAutomation]::WaitForWindowWithEditsByPid(
-            $ProcessId,
-            5000
-        )
-
-        if ($null -ne $credWin) {
-
-            Write-Log -Message "  NLA credential prompt detected" -LogFile $logFile
-
-            [RdpUIAutomation]::FillCredentials(
-                $credWin,
-                $Username,
-                $Password
-            ) | Out-Null
-
-            Start-Sleep -Milliseconds 500
-
-            $clicked = [RdpUIAutomation]::ClickButton($credWin, "OK")
-
-            if (-not $clicked) {
-                [RdpUIAutomation]::ClickFirstActionButton($credWin) | Out-Null
-            }
-
-            Write-Log -Message "  Credentials submitted" -LogFile $logFile
-        }
+    # Phase 3: Post-login warning
+    Start-Sleep -Seconds 2
+    $secWin3 = [RdpUIAutomation]::WaitForWindowTitleByPid($Process.Id, $securityTitles, 3000)
+    if ($null -ne $secWin3) {
+        [RdpUIAutomation]::ClickButton($secWin3, "Yes") | Out-Null
+        Write-Log -Message "  Post-login warning dismissed" -LogFile $logFile
     }
 }
 
 # ===== MAIN =====
-try {
+Write-Log -Message "==========================================" -LogFile $logFile
+Write-Log -Message "RDP Grid Launcher" -LogFile $logFile
+Write-Log -Message "Username: $username" -LogFile $logFile
 
-    Write-Log -Message "==========================================" -LogFile $logFile
-    Write-Log -Message "RDP Grid Launcher (Fixed Grid Mode)" -LogFile $logFile
-    Write-Log -Message "Username: $username" -LogFile $logFile
+[array]$servers = Get-ValidatedServers -Path $serverFile -LogFile $logFile
 
-    # Load servers
-    [array]$servers = Get-ValidatedServers -Path $serverFile -LogFile $logFile
+if ($servers.Count -eq 0) {
+    Write-Log -Message "No servers configured" -LogFile $logFile -Level "ERROR"
+    exit 1
+}
 
-    if ($servers.Count -eq 0) {
+Write-Log -Message "Servers: $($servers.Count)" -LogFile $logFile
 
-        Write-Log -Message "ERROR: No valid servers configured" -LogFile $logFile -Level "ERROR"
+$positions = Get-GridPositions
 
-        exit 1
-    }
+# Cleanup old RDP files
+Get-ChildItem $rdpFolder -Filter "*.rdp" -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
 
-    Write-Log -Message "Servers: $($servers.Count)" -LogFile $logFile
-
-    # Get positions
-    $positions = Get-GridPositions
-
-    # Cleanup old RDP files
-    Get-ChildItem $rdpFolder -Filter "*.rdp" -ErrorAction SilentlyContinue |
-        Remove-Item -Force -ErrorAction SilentlyContinue
-
-    $launched = 0
-    $failed   = 0
-
-    # Launch sequentially
-    for ($i = 0; $i -lt $servers.Count; $i++) {
-
-        $server = $servers[$i]
-
-        if ($i -ge $positions.Count) {
-
-            Write-Log -Message "No grid slot for $server" -LogFile $logFile -Level "WARN"
-
-            break
-        }
-
-        $pos = $positions[$i]
-
-        Write-Log -Message "--- $server ---" -LogFile $logFile
-
+# Check already connected
+$alreadyConnected = @()
+$existingMstsc = Get-Process -Name "mstsc" -ErrorAction SilentlyContinue
+if ($existingMstsc) {
+    foreach ($p in $existingMstsc) {
         try {
-
-            # Store credential
-            $cmdkeyList = & cmdkey /list 2>&1 | Out-String
-
-            if ($cmdkeyList -notmatch [regex]::Escape("TERMSRV/$server")) {
-
-                if ($password) {
-
-                    & cmdkey `
-                        /generic:TERMSRV/$server `
-                        /user:$username `
-                        /pass:$password | Out-Null
-
-                    Write-Log -Message "  Credential stored" -LogFile $logFile
+            $title = $p.MainWindowTitle
+            foreach ($s in $servers) {
+                if ($title -match [regex]::Escape($s)) {
+                    $alreadyConnected += $s
+                    Write-Log -Message "  Already connected: $s" -LogFile $logFile
                 }
             }
+        } catch {}
+    }
+}
 
-            # Generate RDP file (WINDOWED)
-            $safe = $server -replace '[^a-zA-Z0-9\.\-]', '_'
+# Track launched processes for final reposition
+$launchedProcs = @()
 
-            $rdpPath = Join-Path $rdpFolder "$safe.rdp"
+# Launch sequentially
+for ($i = 0; $i -lt $servers.Count; $i++) {
+
+    $server = $servers[$i]
+
+    if ($alreadyConnected -contains $server) {
+        Write-Log -Message "--- $server --- SKIPPED (already connected)" -LogFile $logFile
+        continue
+    }
+
+    if ($i -ge $positions.Count) {
+        Write-Log -Message "No grid slot for $server" -LogFile $logFile -Level "WARN"
+        break
+    }
+
+    $pos = $positions[$i]
+
+    Write-Log -Message "--- $server ---" -LogFile $logFile
+
+    try {
+        # Store creds
+        $cmdkeyList = & cmdkey /list 2>&1 | Out-String
+        if ($cmdkeyList -notmatch [regex]::Escape("TERMSRV/$server")) {
+            if ($password) {
+                & cmdkey /generic:TERMSRV/$server /user:$username /pass:$password | Out-Null
+            }
+        }
+
+        # RDP FILE
+        $safe = $server -replace '[^a-zA-Z0-9\.\-]', '_'
+        $rdpPath = Join-Path $rdpFolder "$safe.rdp"
 
 @"
 full address:s:$server
 username:s:$username
 prompt for credentials:i:0
-authentication level:i:2
+authentication level:i:0
 enablecredsspsupport:i:1
 screen mode id:i:1
-desktopwidth:i:1280
-desktopheight:i:800
+desktopwidth:i:$($pos.W)
+desktopheight:i:$($pos.H)
 smart sizing:i:1
+redirectclipboard:i:1
 "@ | Set-Content -Path $rdpPath -Encoding ASCII
 
-            Write-Log -Message "  Launching mstsc..." -LogFile $logFile
+        Write-Log -Message "  Launching mstsc..." -LogFile $logFile
 
-            # Launch
-            $proc = Start-Process `
-                "mstsc.exe" `
-                -ArgumentList "`"$rdpPath`"" `
-                -PassThru
+        # LAUNCH
+        $proc = Start-Process "mstsc.exe" -ArgumentList "`"$rdpPath`"" -PassThru
 
-            if ($null -eq $proc) {
+        if ($null -eq $proc) { throw "Failed to start mstsc" }
 
-                throw "Failed to start mstsc"
-            }
+        Write-Log -Message "  PID: $($proc.Id)" -LogFile $logFile
 
-            Write-Log -Message "  PID: $($proc.Id)" -LogFile $logFile
+        # Wait for window
+        Start-Sleep -Seconds 3
 
-            # Wait before moving
-            Start-Sleep -Seconds 3
-
-            # Restore + move immediately
-            $moved = Move-RdpWindow `
-                -Process $proc `
-                -Position $pos
-
-            if ($moved) {
-
-                Write-Log -Message "  Positioned in grid slot $($i + 1)" -LogFile $logFile
-            }
-            else {
-
-                Write-Log -Message "  Could not position window" -LogFile $logFile -Level "WARN"
-            }
-
-            # Login automation
-            Invoke-AutoLogin `
-                -ProcessId $proc.Id `
-                -Server $server `
-                -Username $username `
-                -Password $password
-
-            $launched++
-
-        }
-        catch {
-
-            Write-Log -Message "  FAILED: $($_.Exception.Message)" -LogFile $logFile -Level "ERROR"
-
-            $failed++
+        # Position
+        $moved = Move-RdpWindow -Process $proc -Position $pos
+        if ($moved) {
+            Write-Log -Message "  Positioned at slot $($i+1)" -LogFile $logFile
         }
 
-        # Wait before next server
-        Start-Sleep -Seconds 5
+        # Login
+        Invoke-AutoLogin -Process $proc -Server $server -Username $username -Password $password
+
+        $launchedProcs += @{ Proc = $proc; Index = $i }
+
+    }
+    catch {
+        Write-Log -Message "  FAILED: $($_.Exception.Message)" -LogFile $logFile -Level "ERROR"
     }
 
-    Write-Log -Message "==========================================" -LogFile $logFile
-    Write-Log -Message "Complete: $launched launched, $failed failed" -LogFile $logFile
-    Write-Log -Message "==========================================" -LogFile $logFile
+    Start-Sleep -Seconds 5
 }
-catch {
 
-    Write-Log -Message "FATAL: $($_.Exception.Message)" -LogFile $logFile -Level "FATAL"
+# ===== FINAL REPOSITION (fix minimized windows) =====
+Write-Log -Message "Final reposition pass..." -LogFile $logFile
+Start-Sleep -Seconds 3
 
-    exit 1
+foreach ($entry in $launchedProcs) {
+    try {
+        $p = $entry.Proc
+        $pos = $positions[$entry.Index]
+        $p.Refresh()
+        $hwnd = $p.MainWindowHandle
+        if ($hwnd -ne [IntPtr]::Zero) {
+            [WinAPI]::ShowWindow($hwnd, [WinAPI]::SW_RESTORE) | Out-Null
+            Start-Sleep -Milliseconds 200
+            [WinAPI]::MoveWindow($hwnd, $pos.X, $pos.Y, $pos.W, $pos.H, $true) | Out-Null
+        }
+    } catch {}
 }
+
+Write-Log -Message "==========================================" -LogFile $logFile
+Write-Log -Message "Done." -LogFile $logFile
+Write-Log -Message "==========================================" -LogFile $logFile
