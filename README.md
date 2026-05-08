@@ -1,144 +1,136 @@
 # RDP Launcher
 
-Automated RDP session launcher with grid layout and secure credential management via Windows Credential Manager.
+Automated RDP session launcher with grid layout and auto-login for a two-tier jump server setup.
 
-## Features
-
-- **Secure credentials** — uses Windows Credential Manager (`cmdkey`), no plaintext files
-- **Multi-monitor grid** — auto-arranges sessions across all monitors
-- **Input validation** — validates all server IPs/hostnames before connecting
-- **Retry logic** — automatic retries on launch failures
-- **Structured logging** — timestamped logs with severity levels
-- **Two-tier deployment** — laptop → jump server → target servers
-
-## Two-Tier Setup (Jump Server)
+## How It Works
 
 ```
-Your Laptop                    Jump Server (192.168.58.23)         Target Servers
+Your Laptop                    Jump Server (10.232.170.158)        Target Servers
 +-----------+    RDP           +-------------------------+   RDP   +----------------+
-| launch-   | -------->        | RDP Launcher (copy)     | ------> | 172.17.35.49   |
-| rdp.bat   |  auto-login      | launch-grid.bat         |         | 10.0.0.50      |
-+-----------+                  | (multi-monitor grid)    |         | 10.0.0.51      |
-                               +-------------------------+         +----------------+
+| launch-   | -------->        | rdp-grid.ps1            | ------> | 192.168.58.7   |
+| rdp.bat   |  multi-monitor   | (auto-login + grid)     |         | 192.168.58.9   |
++-----------+                  +-------------------------+         | 192.168.58.10  |
+                                                                   | ...            |
+                                                                   +----------------+
 ```
 
-**Step 1: On your laptop**
-- `config/servers.txt` contains ONLY the jump server IP
-- Run `launch-rdp.bat` to connect to the jump server
+1. **Laptop** runs `launch-rdp.bat` → connects to jump server via RDP (multi-monitor)
+2. **Jump server** runs `launch-grid.bat` → opens all target servers in a tiled grid with auto-login
 
-**Step 2: On the jump server**
-- Run `deploy.bat` to copy the tool automatically, OR copy manually
-- Edit `config/servers.txt` with the target server IPs
-- Run `launch-grid.bat` to launch all targets in a grid layout
+## Setup
+
+### 1. Configure files
+
+```
+config/servers.txt            # Jump server IP (used by your laptop)
+config/user.txt               # Credentials for jump server connection
+config/jumpserver-servers.txt # Target server IPs (deployed to jump server)
+config/jumpserver-user.txt    # Credentials for target servers (deployed to jump server)
+```
+
+### 2. Format for user.txt / jumpserver-user.txt
+
+```
+Username = domain\user
+Password = yourpassword
+```
+
+### 3. Format for servers.txt / jumpserver-servers.txt
+
+One IP or hostname per line. Lines starting with `#` are comments.
+
+```
+192.168.58.7
+192.168.58.9
+192.168.58.10
+```
+
+### 4. Deploy to jump server
+
+```
+deploy.bat
+```
+
+This copies scripts and configs to `C:\RDP_Launcher` on the jump server via admin share (`\\server\C$`).
+
+### 5. Run
+
+- **On laptop**: double-click `launch-rdp.bat` (connects to jump server)
+- **On jump server**: double-click `launch-grid.bat` (launches all target RDP sessions in grid)
 
 ## Project Structure
 
 ```
 RDP_Launcher/
 ├── config/
-│   ├── servers.txt              # Server list (edit per machine) [gitignored]
+│   ├── servers.txt              # Jump server IP (your laptop)
+│   ├── jumpserver-servers.txt   # Target servers (deployed to jump server)
+│   ├── user.txt                 # Jump server credentials
+│   ├── jumpserver-user.txt      # Target server credentials
 │   ├── servers.example.txt      # Template
-│   ├── user.txt                 # Username (domain\user) [gitignored]
-│   ├── user.example.txt         # Template
-│   └── jumpserver-servers.txt   # Target servers for jump server deploy
+│   └── user.example.txt         # Template
 ├── scripts/
-│   ├── rdp-gui.ps1              # GUI dashboard
+│   ├── rdp-gui.ps1              # GUI launcher (laptop)
+│   ├── rdp-grid.ps1             # Grid launcher with auto-login (jump server)
 │   ├── rdp-auto.ps1             # Headless launcher (Task Scheduler)
-│   ├── rdp-grid.ps1             # Multi-monitor grid launcher
-│   ├── deploy-to-jumpserver.ps1 # Deployment orchestrator
+│   ├── deploy-to-jumpserver.ps1 # Deployment script
 │   └── lib/
-│       ├── Config.ps1           # Shared configuration module
-│       └── RdpUIAutomation.cs   # .NET UI Automation helper
-├── logs/                        # Runtime logs [gitignored]
-├── rdp_sessions/                # Generated .rdp files [gitignored]
-├── launch-rdp.bat               # GUI launcher
-├── launch-grid.bat              # Grid launcher
-├── deploy.bat                   # Deploy to jump server
-├── .gitignore
-└── README.md
+│       ├── Config.ps1           # Shared config module
+│       └── RdpUIAutomation.cs   # UI Automation helper for auto-login
+├── logs/                        # Runtime logs
+├── rdp_sessions/                # Generated .rdp files
+├── launch-rdp.bat               # Laptop: connect to jump server
+├── launch-grid.bat              # Jump server: launch target grid
+└── deploy.bat                   # Laptop: deploy to jump server
 ```
-
-## Quick Start
-
-1. Copy the example configs:
-   ```
-   copy config\servers.example.txt config\servers.txt
-   copy config\user.example.txt config\user.txt
-   ```
-2. Edit `config\user.txt` — set your `domain\username`
-3. Edit `config\servers.txt` — add server IPs (one per line)
-4. Double-click `launch-rdp.bat` (GUI) or `launch-grid.bat` (grid)
-5. On first connect, you'll be prompted for credentials (stored securely in Windows Credential Manager)
 
 ## Scripts
 
-| Script | Purpose | Use on |
-|--------|---------|--------|
-| `rdp-gui.ps1` | GUI with server list + credential management | Laptop |
-| `rdp-auto.ps1` | Headless, for Task Scheduler | Either |
-| `rdp-grid.ps1` | Auto-arrange across monitors | Jump server |
-| `deploy-to-jumpserver.ps1` | Deploy tool to jump server | Laptop |
+| Script | Purpose | Runs on |
+|--------|---------|---------|
+| `rdp-gui.ps1` | GUI with server list, connects to jump server | Laptop |
+| `rdp-grid.ps1` | Launches targets in grid, auto-login via SendKeys | Jump server |
+| `rdp-auto.ps1` | Headless launcher for Task Scheduler | Either |
+| `deploy-to-jumpserver.ps1` | Copies files to jump server via admin share | Laptop |
 
-### rdp-grid.ps1 - Grid Layout
+## Grid Layout
 
-Detects all monitors and arranges RDP sessions in an optimal grid:
+`rdp-grid.ps1` uses hardcoded positions matching the jump server's dual monitors. Each monitor gets 3 windows (2 top + 1 bottom):
 
 ```
-Single Monitor          Dual Monitor
-+-------------+        Monitor 1       Monitor 2
-|  Server 1   |        +-----------+   +-----------+
-+-------------+        | Server 1  |   | Server 3  |
-|  Server 2   |        +-----------+   +-----------+
-+-------------+        | Server 2  |   | Server 4  |
-                       +-----------+   +-----------+
+Left Monitor (-1920,0)     Right Monitor (0,0)
++----------+----------+    +----------+----------+
+| Server 1 | Server 2 |    | Server 4 | Server 5 |
++----------+----------+    +----------+----------+
+| Server 3 |          |    | Server 6 |          |
++----------+----------+    +----------+----------+
 ```
 
-## Configuration
+To adjust positions, edit `Get-GridPositions` in `scripts/rdp-grid.ps1`.
 
-### config/user.txt
-Single line with your domain username:
-```
-DOMAIN\username
-```
+## Auto-Login Flow
 
-### config/servers.txt
-One server IP or hostname per line. Comments start with `#`:
-```
-# Production servers
-192.168.1.100
-10.0.0.50
-myserver.domain.com
-```
-
-Supported formats:
-- IPv4: `192.168.1.100`
-- Hostname: `server.domain.com`
-- With port: `192.168.1.100:3390`
-
-## Security
-
-- **No plaintext passwords** — credentials stored in Windows Credential Manager
-- **Input validation** — server entries validated against IP/hostname patterns
-- **Gitignored secrets** — `user.txt`, `servers.txt`, and `credentials.txt` never committed
-- **Secure prompts** — deployment uses `Get-Credential` (masked input)
-- **No credential files deployed** — jump server uses same Credential Manager approach
+1. Store credentials via `cmdkey` (Windows Credential Manager)
+2. Launch mstsc with `.rdp` file
+3. Dismiss security/certificate warnings via UI Automation
+4. Focus the RDP window
+5. SendKeys: TAB → password → ENTER
 
 ## Logging
 
-All scripts write structured logs to `logs/`:
-- `rdp-gui.log` — GUI launcher events
-- `rdp-auto.log` — Headless launcher events
-- `rdp-grid.log` — Grid launcher events
-- `deploy.log` — Deployment events
+Logs are written to `logs/`:
+- `rdp-grid.log` — Grid launcher
+- `rdp-gui.log` — GUI launcher
+- `deploy.log` — Deployment
 
-Log format: `[2026-05-04 13:57:12] [INFO] Message`
+Format: `[2026-05-08 10:30:00] [INFO] Message`
 
 ## Troubleshooting
 
-| Issue | Solution |
-|-------|----------|
-| "No username in config/user.txt" | Create `config/user.txt` with your `domain\user` |
-| "No valid servers" | Check `config/servers.txt` has valid IPs/hostnames |
-| Credential prompt keeps appearing | Run `cmdkey /list` to verify stored credentials |
-| Grid windows not positioning | Increase wait time or check if mstsc launched |
-| Deploy fails to connect | Verify admin share access: `net use \\server\C$` |
+| Issue | Fix |
+|-------|-----|
+| Deploy error 1219 | Run `net use \\server\C$ /delete` then retry |
+| Deploy error 86 | Wrong password in `config/user.txt` |
+| Windows stacking | Check `Get-GridPositions` matches jump server monitor layout |
+| Auto-login not working | Verify credentials in `jumpserver-user.txt` |
+| Single screen only | Ensure RDP to jump server uses multi-monitor (`use multimon:i:1`) |

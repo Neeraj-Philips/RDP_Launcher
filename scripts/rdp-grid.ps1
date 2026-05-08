@@ -78,17 +78,18 @@ if (-not $username) {
 
 # ===== GRID =====
 function Get-GridPositions {
-    # Display1: 1920x1080 at X=0 (Primary, right screen)
-    # Display2: 1920x1080 at X=-1920 (left screen)
+    # Jump server dual monitors:
+    # Display2: 1920x1080 at X=-1920 (left)
+    # Display1: 1920x1080 at X=0 (right, primary)
     # 3 windows per monitor, each 960x540
 
     return @(
-        # Left monitor (Display2: starts at X=-1920)
+        # Left monitor (X=-1920)
         @{ X = -1920; Y = 0;   W = 960; H = 540 }
         @{ X = -960;  Y = 0;   W = 960; H = 540 }
         @{ X = -1920; Y = 540; W = 960; H = 540 }
 
-        # Right monitor (Display1: starts at X=0)
+        # Right monitor (X=0)
         @{ X = 0;    Y = 0;   W = 960; H = 540 }
         @{ X = 960;  Y = 0;   W = 960; H = 540 }
         @{ X = 0;    Y = 540; W = 960; H = 540 }
@@ -105,7 +106,7 @@ function Focus-Window {
     if ($hwnd -ne [IntPtr]::Zero) {
         [WinAPI]::ShowWindow($hwnd, [WinAPI]::SW_RESTORE) | Out-Null
         Start-Sleep -Milliseconds 200
-        [WinAPI]::SetForegroundWindow($hwnd) | Out-Null
+        #[WinAPI]::SetForegroundWindow($hwnd) | Out-Null
         Start-Sleep -Milliseconds 500
         return $true
     }
@@ -132,7 +133,7 @@ function Move-RdpWindow {
             $hwnd = $Process.MainWindowHandle
 
             if ($hwnd -ne 0) {
-                [WinAPI]::ShowWindow($hwnd, [WinAPI]::SW_RESTORE) | Out-Null
+                #[WinAPI]::ShowWindow($hwnd, [WinAPI]::SW_RESTORE) | Out-Null
                 Start-Sleep -Milliseconds 300
                 [WinAPI]::MoveWindow(
                     $hwnd,
@@ -308,6 +309,13 @@ for ($i = 0; $i -lt $servers.Count; $i++) {
         $safe = $server -replace '[^a-zA-Z0-9\.\-]', '_'
         $rdpPath = Join-Path $rdpFolder "$safe.rdp"
 
+        # winposstr format: flags,showCmd,left,top,right,bottom
+        # showCmd 1 = normal window
+        $winLeft   = $pos.X
+        $winTop    = $pos.Y
+        $winRight  = $pos.X + $pos.W
+        $winBottom = $pos.Y + $pos.H
+
 @"
 full address:s:$server
 username:s:$username
@@ -319,6 +327,7 @@ desktopwidth:i:$($pos.W)
 desktopheight:i:$($pos.H)
 smart sizing:i:1
 redirectclipboard:i:1
+winposstr:s:0,1,$winLeft,$winTop,$winRight,$winBottom
 "@ | Set-Content -Path $rdpPath -Encoding ASCII
 
         Write-Log -Message "  Launching mstsc..." -LogFile $logFile
@@ -352,24 +361,3 @@ redirectclipboard:i:1
     Start-Sleep -Seconds 5
 }
 
-# ===== FINAL REPOSITION (fix minimized windows) =====
-Write-Log -Message "Final reposition pass..." -LogFile $logFile
-Start-Sleep -Seconds 3
-
-foreach ($entry in $launchedProcs) {
-    try {
-        $p = $entry.Proc
-        $pos = $positions[$entry.Index]
-        $p.Refresh()
-        $hwnd = $p.MainWindowHandle
-        if ($hwnd -ne [IntPtr]::Zero) {
-            [WinAPI]::ShowWindow($hwnd, [WinAPI]::SW_RESTORE) | Out-Null
-            Start-Sleep -Milliseconds 200
-            [WinAPI]::MoveWindow($hwnd, $pos.X, $pos.Y, $pos.W, $pos.H, $true) | Out-Null
-        }
-    } catch {}
-}
-
-Write-Log -Message "==========================================" -LogFile $logFile
-Write-Log -Message "Done." -LogFile $logFile
-Write-Log -Message "==========================================" -LogFile $logFile

@@ -213,6 +213,7 @@ function New-RdpFile {
     $promptVal = if ($PromptForCredentials) { 1 } else { 0 }
     $screenMode = if ($FullScreen -or $MultiMonitor) { 2 } else { 1 }
     $multimonVal = if ($MultiMonitor) { 1 } else { 0 }
+    $spanVal = if ($Width -gt 1920 -and -not $MultiMonitor) { 1 } else { 0 }
 
     $content = @"
 full address:s:$Server
@@ -221,6 +222,7 @@ prompt for credentials:i:$promptVal
 authentication level:i:0
 enablecredsspsupport:i:1
 use multimon:i:$multimonVal
+span monitors:i:$spanVal
 screen mode id:i:$screenMode
 desktopwidth:i:$Width
 desktopheight:i:$Height
@@ -230,9 +232,9 @@ disable wallpaper:i:1
 allow font smoothing:i:1
 "@
 
-    # If multi-monitor, select only external monitors (skip laptop display 0)
+    # If multi-monitor, select only external monitors (0 and 2, skip laptop 1)
     if ($MultiMonitor) {
-        $content += "`nselectedmonitors:s:1,2"
+        $content += "`nselectedmonitors:s:0,2"
     }
 
     Set-Content -Path $OutputPath -Value $content -Encoding ASCII
