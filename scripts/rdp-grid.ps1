@@ -4,6 +4,10 @@
 
 #Requires -Version 5.1
 
+param(
+    [string]$ServerListFile = ""
+)
+
 $ErrorActionPreference = "Stop"
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -15,7 +19,7 @@ $scriptDir = $PSScriptRoot
 
 $projectRoot = Split-Path $scriptDir -Parent
 $configDir   = Join-Path $projectRoot "config"
-$serverFile  = Join-Path $configDir  "servers.txt"
+$serverFile  = if ($ServerListFile -and (Test-Path $ServerListFile)) { $ServerListFile } else { Join-Path $configDir "servers.txt" }
 $rdpFolder   = Join-Path $projectRoot "rdp_sessions"
 $logDir      = Join-Path $projectRoot "logs"
 $logFile     = Join-Path $logDir     "rdp-grid.log"
@@ -27,6 +31,14 @@ try {
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
+
+[StructLayout(LayoutKind.Sequential)]
+public struct RECT {
+    public int Left;
+    public int Top;
+    public int Right;
+    public int Bottom;
+}
 
 public class WinAPI {
     [DllImport("user32.dll")]
@@ -40,6 +52,9 @@ public class WinAPI {
 
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
     public const int SW_RESTORE = 9;
 }
@@ -77,23 +92,198 @@ if (-not $username) {
 }
 
 # ===== GRID =====
+function Get-MonitorLayout {
+    <#
+    .SYNOPSIS
+    Detects all monitors and returns their bounds sorted left-to-right.
+    #>
+    $screens = [System.Windows.Forms.Screen]::AllScreens | Sort-Object { $_.Bounds.X }
+
+    $monitors = @()
+    foreach ($scr in $screens) {
+        $monitors += @{
+            X      = $scr.Bounds.X
+            Y      = $scr.Bounds.Y
+            Width  = $scr.Bounds.Width
+            Height = $scr.Bounds.Height
+            Name   = $scr.DeviceName
+        }
+    }
+
+    return $monitors
+}
+
 function Get-GridPositions {
-    # Jump server dual monitors:
-    # Display2: 1920x1080 at X=-1920 (left)
-    # Display1: 1920x1080 at X=0 (right, primary)
-    # 3 windows per monitor, each 960x540
+    param([int]$ServerCount)
 
-    return @(
-        # Left monitor (X=-1920)
-        @{ X = -1920; Y = 0;   W = 960; H = 540 }
-        @{ X = -960;  Y = 0;   W = 960; H = 540 }
-        @{ X = -1920; Y = 540; W = 960; H = 540 }
+    <#
+    .SYNOPSIS
+    Dynamically calculates grid positions based on actual monitor layout
+    and the number of servers to launch.
 
-        # Right monitor (X=0)
-        @{ X = 0;    Y = 0;   W = 960; H = 540 }
-        @{ X = 960;  Y = 0;   W = 960; H = 540 }
-        @{ X = 0;    Y = 540; W = 960; H = 540 }
+    Strategy:
+    - Detect all monitors (sorted left to right)
+    - Distribute servers evenly across monitors
+    - For each monitor, calculate a grid (cols x rows) to fit its share
+    - Return positions as array: [0,0], [0,1], [1,0], [1,1], etc.
+    #>
+
+    $monitors = Get-MonitorLayout
+    $monitorCount = $monitors.Count
+
+    Write-Log -Message "Detected $monitorCount monitor(s):" -LogFile $logFile
+    foreach ($mon in $monitors) {
+        Write-Log -Message "  $($mon.Name): $($mon.Width)x$($mon.Height) at ($($mon.X),$($mon.Y))" -LogFile $logFile
+    }
+
+    if ($ServerCount -eq 0) { return @() }
+
+    # Distribute servers across monitors as evenly as possible
+    $serversPerMonitor = @()
+    $baseCount = [Math]::Floor($ServerCount / $monitorCount)
+    $remainder = $ServerCount % $monitorCount
+
+    for ($m = 0; $m -lt $monitorCount; $m++) {
+        $count = $baseCount
+        if ($m -lt $remainder) { $count++ }
+        $serversPerMonitor += $count
+    }
+
+    Write-Log -Message "Distribution: $($serversPerMonitor -join ', ') servers per monitor" -LogFile $logFile
+
+    # Calculate grid positions for each monitor
+    $positions = @()
+
+    for ($m = 0; $m -lt $monitorCount; $m++) {
+        $mon = $monitors[$m]
+        $count = $serversPerMonitor[$m]
+
+        if ($count -eq 0) { continue }
+
+        # Calculate optimal grid dimensions (cols x rows) for this monitor's share
+        # Prefer wider cells (more cols) since RDP windows are landscape
+        $cols = [Math]::Ceiling([Math]::Sqrt($count))
+        $rows = [Math]::Ceiling($count / $cols)
+
+        $cellW = [Math]::Floor($mon.Width / $cols)
+        $cellH = [Math]::Floor($mon.Height / $rows)
+
+        Write-Log -Message "  Monitor $m grid: ${cols}x${rows} cells (${cellW}x${cellH} each) for $count server(s)" -LogFile $logFile
+
+        # Fill grid row by row: [0,0], [0,1], [1,0], [1,1], ...
+        $placed = 0
+        for ($row = 0; $row -lt $rows -and $placed -lt $count; $row++) {
+            for ($col = 0; $col -lt $cols -and $placed -lt $count; $col++) {
+                $positions += @{
+                    X = $mon.X + ($col * $cellW)
+                    Y = $mon.Y + ($row * $cellH)
+                    W = $cellW
+                    H = $cellH
+                }
+                $placed++
+            }
+        }
+    }
+
+    return $positions
+}
+
+# ===== VERIFY & FIX POSITIONS =====
+function Verify-WindowPositions {
+    <#
+    .SYNOPSIS
+    After all windows are launched, verify each one is at its expected position.
+    If a window is misplaced, reposition it. Retries up to 3 times.
+    #>
+    param(
+        [array]$LaunchedProcs,
+        [array]$Positions
     )
+
+    Write-Log -Message "--- Verifying window positions ---" -LogFile $logFile
+
+    $misplaced = 0
+    $fixed = 0
+    $tolerance = 20  # pixels tolerance for position check
+
+    foreach ($entry in $LaunchedProcs) {
+        $proc = $entry.Proc
+        $idx = $entry.Index
+        $pos = $Positions[$idx]
+
+        try {
+            $proc.Refresh()
+            $hwnd = $proc.MainWindowHandle
+
+            if ($hwnd -eq [IntPtr]::Zero) {
+                Write-Log -Message "  Slot $($idx+1): No window handle - skipping" -LogFile $logFile -Level "WARN"
+                continue
+            }
+
+            # Get actual window position
+            $rect = New-Object RECT
+            $gotRect = [WinAPI]::GetWindowRect($hwnd, [ref]$rect)
+
+            if (-not $gotRect) {
+                Write-Log -Message "  Slot $($idx+1): GetWindowRect failed" -LogFile $logFile -Level "WARN"
+                continue
+            }
+
+            $actualX = $rect.Left
+            $actualY = $rect.Top
+            $actualW = $rect.Right - $rect.Left
+            $actualH = $rect.Bottom - $rect.Top
+
+            $expectedX = $pos.X
+            $expectedY = $pos.Y
+            $expectedW = $pos.W
+            $expectedH = $pos.H
+
+            # Check if position matches within tolerance
+            $xOk = [Math]::Abs($actualX - $expectedX) -le $tolerance
+            $yOk = [Math]::Abs($actualY - $expectedY) -le $tolerance
+            $wOk = [Math]::Abs($actualW - $expectedW) -le $tolerance
+            $hOk = [Math]::Abs($actualH - $expectedH) -le $tolerance
+
+            if ($xOk -and $yOk -and $wOk -and $hOk) {
+                Write-Log -Message "  Slot $($idx+1): OK at ($actualX,$actualY ${actualW}x${actualH})" -LogFile $logFile
+            } else {
+                $misplaced++
+                Write-Log -Message "  Slot $($idx+1): MISPLACED at ($actualX,$actualY ${actualW}x${actualH}) expected ($expectedX,$expectedY ${expectedW}x${expectedH})" -LogFile $logFile -Level "WARN"
+
+                # Retry repositioning up to 3 times
+                $repositioned = $false
+                for ($retry = 1; $retry -le 3; $retry++) {
+                    [WinAPI]::ShowWindow($hwnd, [WinAPI]::SW_RESTORE) | Out-Null
+                    Start-Sleep -Milliseconds 300
+                    [WinAPI]::MoveWindow($hwnd, $expectedX, $expectedY, $expectedW, $expectedH, $true) | Out-Null
+                    Start-Sleep -Milliseconds 500
+
+                    # Verify again
+                    $rect2 = New-Object RECT
+                    [WinAPI]::GetWindowRect($hwnd, [ref]$rect2) | Out-Null
+                    $newX = $rect2.Left
+                    $newY = $rect2.Top
+
+                    if ([Math]::Abs($newX - $expectedX) -le $tolerance -and [Math]::Abs($newY - $expectedY) -le $tolerance) {
+                        $repositioned = $true
+                        $fixed++
+                        Write-Log -Message "  Slot $($idx+1): FIXED on retry $retry -> ($newX,$newY)" -LogFile $logFile
+                        break
+                    }
+                }
+
+                if (-not $repositioned) {
+                    Write-Log -Message "  Slot $($idx+1): Could not fix after 3 retries" -LogFile $logFile -Level "ERROR"
+                }
+            }
+        }
+        catch {
+            Write-Log -Message "  Slot $($idx+1): Verify error: $($_.Exception.Message)" -LogFile $logFile -Level "WARN"
+        }
+    }
+
+    Write-Log -Message "--- Verification complete: $misplaced misplaced, $fixed fixed ---" -LogFile $logFile
 }
 
 # ===== FOCUS WINDOW =====
@@ -251,7 +441,46 @@ if ($servers.Count -eq 0) {
 
 Write-Log -Message "Servers: $($servers.Count)" -LogFile $logFile
 
-$positions = Get-GridPositions
+# Check for saved layout file (captured from Dashboard)
+$layoutFile = Join-Path $configDir "layout.txt"
+$savedLayout = @{}
+if (Test-Path $layoutFile) {
+    Get-Content $layoutFile | ForEach-Object {
+        $line = $_.Trim()
+        if ($line -and -not $line.StartsWith("#")) {
+            $parts = $line -split '\|'
+            if ($parts.Count -eq 5) {
+                $savedLayout[$parts[0]] = @{
+                    X = [int]$parts[1]
+                    Y = [int]$parts[2]
+                    W = [int]$parts[3]
+                    H = [int]$parts[4]
+                }
+            }
+        }
+    }
+    Write-Log -Message "Saved layout loaded: $($savedLayout.Count) entries" -LogFile $logFile
+}
+
+# Use saved layout positions if available, otherwise calculate dynamic grid
+$useSavedLayout = ($savedLayout.Count -gt 0)
+$positions = @()
+
+if ($useSavedLayout) {
+    # Build positions array from saved layout (in server order)
+    foreach ($srv in $servers) {
+        if ($savedLayout.ContainsKey($srv)) {
+            $positions += $savedLayout[$srv]
+        } else {
+            # No saved position for this server - will use dynamic fallback
+            $positions += $null
+        }
+    }
+    Write-Log -Message "Using saved layout" -LogFile $logFile
+} else {
+    $positions = Get-GridPositions -ServerCount $servers.Count
+    Write-Log -Message "Using dynamic grid layout" -LogFile $logFile
+}
 
 # Cleanup old RDP files
 Get-ChildItem $rdpFolder -Filter "*.rdp" -ErrorAction SilentlyContinue |
@@ -293,6 +522,17 @@ for ($i = 0; $i -lt $servers.Count; $i++) {
     }
 
     $pos = $positions[$i]
+
+    # If no saved position for this server, calculate a fallback
+    if ($null -eq $pos) {
+        $fallback = Get-GridPositions -ServerCount $servers.Count
+        if ($i -lt $fallback.Count) {
+            $pos = $fallback[$i]
+        } else {
+            Write-Log -Message "No position available for $server" -LogFile $logFile -Level "WARN"
+            continue
+        }
+    }
 
     Write-Log -Message "--- $server ---" -LogFile $logFile
 
@@ -360,4 +600,18 @@ winposstr:s:0,1,$winLeft,$winTop,$winRight,$winBottom
 
     Start-Sleep -Seconds 5
 }
+
+# ===== POST-LAUNCH VERIFICATION =====
+# Wait for all windows to settle, then verify and fix positions
+if ($launchedProcs.Count -gt 0) {
+    Write-Log -Message "" -LogFile $logFile
+    Write-Log -Message "All launches complete. Waiting for windows to settle..." -LogFile $logFile
+    Start-Sleep -Seconds 5
+
+    Verify-WindowPositions -LaunchedProcs $launchedProcs -Positions $positions
+}
+
+Write-Log -Message "==========================================" -LogFile $logFile
+Write-Log -Message "RDP Grid Launcher finished" -LogFile $logFile
+Write-Log -Message "==========================================" -LogFile $logFile
 

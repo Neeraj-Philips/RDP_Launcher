@@ -117,10 +117,11 @@ Write-Host "Copying files..." -ForegroundColor Gray
 $filesToCopy = @(
     @{ Src = "launch-rdp.bat";                  Dst = "launch-rdp.bat" }
     @{ Src = "launch-grid.bat";                 Dst = "launch-grid.bat" }
+    @{ Src = "launch-dashboard.bat";            Dst = "launch-dashboard.bat" }
     @{ Src = "README.md";                       Dst = "README.md" }
     @{ Src = "scripts\rdp-gui.ps1";             Dst = "scripts\rdp-gui.ps1" }
-    @{ Src = "scripts\rdp-auto.ps1";            Dst = "scripts\rdp-auto.ps1" }
     @{ Src = "scripts\rdp-grid.ps1";            Dst = "scripts\rdp-grid.ps1" }
+    @{ Src = "scripts\Dashboard.ps1";           Dst = "scripts\Dashboard.ps1" }
     @{ Src = "scripts\lib\Config.ps1";          Dst = "scripts\lib\Config.ps1" }
     @{ Src = "scripts\lib\RdpUIAutomation.cs";  Dst = "scripts\lib\RdpUIAutomation.cs" }
     @{ Src = "config\servers.example.txt";      Dst = "config\servers.example.txt" }

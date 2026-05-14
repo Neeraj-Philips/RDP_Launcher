@@ -232,10 +232,8 @@ disable wallpaper:i:1
 allow font smoothing:i:1
 "@
 
-    # If multi-monitor, select only external monitors (0 and 2, skip laptop 1)
-    if ($MultiMonitor) {
-        $content += "`nselectedmonitors:s:0,2"
-    }
+    # If multi-monitor, use all available monitors (no selectedmonitors restriction)
+    # This lets the RDP session span across all monitors connected to the machine.
 
     Set-Content -Path $OutputPath -Value $content -Encoding ASCII
     return $OutputPath
