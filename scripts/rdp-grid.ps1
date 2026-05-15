@@ -563,6 +563,7 @@ prompt for credentials:i:0
 authentication level:i:0
 enablecredsspsupport:i:1
 screen mode id:i:1
+use multimon:i:1
 desktopwidth:i:$($pos.W)
 desktopheight:i:$($pos.H)
 smart sizing:i:1
