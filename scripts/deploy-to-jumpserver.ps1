@@ -91,8 +91,20 @@ $oldEAP = $ErrorActionPreference
 $ErrorActionPreference = "SilentlyContinue"
 & net use "\\$jumpServer\C`$" /delete /y 2>&1 | Out-Null
 & net use "\\$jumpServer\IPC`$" /delete /y 2>&1 | Out-Null
-& net use /delete "\\$jumpServer\*" /y 2>&1 | Out-Null
-Start-Sleep -Milliseconds 500
+& net use "\\$jumpServer\ADMIN`$" /delete /y 2>&1 | Out-Null
+# Also try wildcard delete for any other shares
+$existingShares = & net use 2>&1 | Select-String $jumpServer
+if ($existingShares) {
+    foreach ($line in $existingShares) {
+        $parts = $line.ToString().Trim() -split '\s+'
+        foreach ($p in $parts) {
+            if ($p -match "\\\\$([regex]::Escape($jumpServer))") {
+                & net use $p /delete /y 2>&1 | Out-Null
+            }
+        }
+    }
+}
+Start-Sleep -Seconds 1
 $ErrorActionPreference = $oldEAP
 
 # Connect with credentials
@@ -194,6 +206,31 @@ foreach ($dir in @("logs", "rdp_sessions")) {
             Write-Log -Message "Failed to create $dir on remote: $($_.Exception.Message)" -LogFile $logFile -Level "WARN"
         }
     }
+}
+
+# ===== AUTO-START DASHBOARD ON LOGIN =====
+Write-Host ""
+Write-Host "Setting up Dashboard auto-start on login..." -ForegroundColor Gray
+
+try {
+    # Create a startup shortcut for the jump server user
+    $startupFolder = "\\$jumpServer\C`$\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup"
+    if (-not (Test-Path $startupFolder)) {
+        # Try user-specific startup
+        $startupFolder = "\\$jumpServer\C`$\Users\$($netUser -replace '.*\\','')\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
+    }
+
+    if (Test-Path $startupFolder) {
+        $shortcutPath = Join-Path $startupFolder "RDP Dashboard.bat"
+        $shortcutContent = "@echo off`r`nstart `"`" powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File `"C:\RDP_Launcher\scripts\Dashboard.ps1`""
+        Set-Content -Path $shortcutPath -Value $shortcutContent -Encoding ASCII
+        Write-Host "  OK: Dashboard will auto-start on login" -ForegroundColor Green
+    } else {
+        Write-Host "  SKIP: Startup folder not found" -ForegroundColor Yellow
+    }
+}
+catch {
+    Write-Host "  SKIP: Could not set auto-start ($($_.Exception.Message))" -ForegroundColor Yellow
 }
 
 # ===== CLEANUP NET USE =====
