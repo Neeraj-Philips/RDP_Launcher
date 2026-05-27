@@ -89,7 +89,10 @@ if ($password) {
 # Disconnect any existing connection first (avoids error 1219)
 $oldEAP = $ErrorActionPreference
 $ErrorActionPreference = "SilentlyContinue"
-& net use "\\$jumpServer\C`$" /delete 2>&1 | Out-Null
+& net use "\\$jumpServer\C`$" /delete /y 2>&1 | Out-Null
+& net use "\\$jumpServer\IPC`$" /delete /y 2>&1 | Out-Null
+& net use /delete "\\$jumpServer\*" /y 2>&1 | Out-Null
+Start-Sleep -Milliseconds 500
 $ErrorActionPreference = $oldEAP
 
 # Connect with credentials

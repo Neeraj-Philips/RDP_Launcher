@@ -1,3 +1,0 @@
-# Credentials for Scan Machines
-Username = 320050225
-Password = Admin1EDI!

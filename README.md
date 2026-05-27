@@ -5,7 +5,7 @@ Automated RDP session launcher with dynamic grid layout, auto-login, and a dashb
 ## How It Works
 
 ```
-Your Laptop                    Jump Server (10.232.170.158)        Target Servers
+Your Laptop                    Jump Server (192.168.226.2)         Target Servers
 +-----------+    RDP           +-------------------------+   RDP   +----------------+
 | launch-   | -------->        | Dashboard.ps1           | ------> | 192.168.58.7   |
 | rdp.bat   |  dual monitor    | rdp-grid.ps1            |         | 192.168.58.9   |
@@ -19,12 +19,100 @@ Your Laptop                    Jump Server (10.232.170.158)        Target Server
 ## Features
 
 - **Dashboard GUI** — launch, stop (all or selected), and monitor sessions
+- **Fullscreen button** — relaunch a selected session in fullscreen across all monitors
 - **Dynamic grid layout** — auto-detects monitors, calculates optimal window tiling
 - **Capture & Apply Layout** — arrange windows manually once, save positions, reuse forever
 - **Add/Remove servers** — manage IPs directly from the dashboard
 - **Selective launch/stop** — check individual servers to launch or stop them
 - **Position verification** — auto-fixes misplaced windows after launch
 - **Auto-login** — credentials typed via SendKeys + UI Automation
+- **Auto-dismiss warnings** — certificate/security dialogs handled automatically
+
+## Quick Start (Step by Step)
+
+### Step 1: Download and extract
+
+Place the `RDP_Launcher` folder anywhere on your laptop (e.g. `C:\Users\YourUser\Downloads\RDP_Launcher`).
+
+### Step 2: Configure your jump server connection (laptop side)
+
+Edit `config/servers.txt` — put your jump server IP:
+```
+192.168.226.2
+```
+
+Edit `config/user.txt` — put your jump server credentials:
+```
+Username = devopsdom\fse_admin
+Password = Philips@123
+```
+
+### Step 3: Configure target servers (jump server side)
+
+Edit `config/jumpserver-servers.txt` — list all target machine IPs:
+```
+192.168.58.7
+192.168.58.9
+192.168.58.10
+192.168.58.15
+```
+
+Edit `config/jumpserver-user.txt` — credentials for target machines:
+```
+Username = devopsdom\fse_admin
+Password = Philips1!
+```
+
+### Step 4: Deploy to jump server
+
+Double-click `deploy.bat` (or run from cmd):
+```
+deploy.bat
+```
+This copies all scripts and configs to `C:\RDP_Launcher` on the jump server.
+
+### Step 5: Connect to jump server from laptop
+
+Double-click `launch-rdp.bat`:
+```
+launch-rdp.bat
+```
+This opens an RDP session to the jump server in dual-monitor fullscreen.
+
+### Step 6: Launch target sessions from jump server
+
+Once inside the jump server, open `C:\RDP_Launcher` and either:
+
+**Option A — Dashboard (recommended):**
+```
+launch-dashboard.bat
+```
+- Check the servers you want to connect to
+- Click **Launch Selected** or **Launch All**
+- Sessions open in a grid layout across monitors
+- Use **Fullscreen** button to expand one session to all monitors
+- Use **Stop All** or **Stop Selected** to disconnect
+
+**Option B — Grid directly:**
+```
+launch-grid.bat
+```
+Launches all configured servers in a grid layout with auto-login.
+
+### Step 7: Arrange windows (optional)
+
+1. After grid launch, drag/resize windows to your preferred positions
+2. Open Dashboard → click **Capture Layout**
+3. Next time you launch, windows will use your saved positions
+
+### Step 8: Fullscreen a single session
+
+1. In Dashboard, check the server you want
+2. Click **Fullscreen**
+3. That session relaunches spanning all monitors
+4. Press `Ctrl+Alt+Break` to exit back to windowed mode
+
+---
 
 ## Setup
 
@@ -77,10 +165,20 @@ Copies scripts and configs to `C:\RDP_Launcher` on the jump server via admin sha
 | Launch All | Launch all checked servers |
 | Stop All | Kill all RDP sessions |
 | Stop Selected | Kill only checked servers' sessions |
+| **Fullscreen** | Relaunch checked server in fullscreen across all monitors |
 | Capture Layout | Save current window positions after manual arrangement |
 | Apply Layout | Restore windows to captured positions |
 | Session Status | Live connected/disconnected status (auto-refreshes) |
 | Live Logs | Tail of rdp-grid.log |
+
+### Fullscreen (All Monitors)
+
+1. Check a server in the server list
+2. Click **Fullscreen**
+3. Existing windowed session is closed
+4. New session launches in fullscreen spanning all monitors (`/f /multimon`)
+5. Certificate warnings are auto-dismissed
+6. Press `Ctrl+Alt+Break` to exit fullscreen
 
 ### Capture Layout Workflow
 
@@ -138,9 +236,10 @@ On launch, `rdp-grid.ps1`:
 
 | Issue | Fix |
 |-------|-----|
-| Deploy error 1219 | `net use \\server\C$ /delete` then retry |
+| Deploy error 1219 | Run `net use \\server\C$ /delete /y` then retry |
 | Deploy error 86 | Wrong password in `config/user.txt` |
 | Windows stacking | Delete `config/layout.txt` to reset to dynamic grid |
 | Auto-login failing | Check credentials in user.txt |
 | Single screen only | Ensure jump server RDP uses `use multimon:i:1` |
 | New server not positioned | Capture layout again to include it |
+| Fullscreen not spanning | Use Dashboard Fullscreen button or `Ctrl+Alt+Break` |

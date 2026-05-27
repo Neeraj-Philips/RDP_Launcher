@@ -66,7 +66,7 @@ if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Forc
 # ===== FORM =====
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "RDP Session Dashboard"
-$form.Size = New-Object System.Drawing.Size(920, 700)
+$form.Size = New-Object System.Drawing.Size(920, 740)
 $form.StartPosition = "CenterScreen"
 $form.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
 $form.ForeColor = [System.Drawing.Color]::White
@@ -242,9 +242,20 @@ $layoutStatus.ForeColor = [System.Drawing.Color]::Gray
 $layoutStatus.Text = ""
 $form.Controls.Add($layoutStatus)
 
+# --- Fullscreen (Dual Monitor) ---
+$fullscreenBtn = New-Object System.Windows.Forms.Button
+$fullscreenBtn.Text = "Fullscreen"
+$fullscreenBtn.Location = New-Object System.Drawing.Point(20, 575)
+$fullscreenBtn.Size = New-Object System.Drawing.Size(250, 35)
+$fullscreenBtn.BackColor = [System.Drawing.Color]::FromArgb(0, 80, 160)
+$fullscreenBtn.ForeColor = [System.Drawing.Color]::White
+$fullscreenBtn.FlatStyle = "Flat"
+$fullscreenBtn.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$form.Controls.Add($fullscreenBtn)
+
 # ===== STATUS BAR =====
 $statusBar = New-Object System.Windows.Forms.Label
-$statusBar.Location = New-Object System.Drawing.Point(20, 630)
+$statusBar.Location = New-Object System.Drawing.Point(20, 660)
 $statusBar.Size = New-Object System.Drawing.Size(860, 25)
 $statusBar.Text = "Ready"
 $statusBar.ForeColor = [System.Drawing.Color]::Gray
@@ -730,6 +741,73 @@ $captureBtn.Add_Click({
 # Apply Layout
 $applyLayoutBtn.Add_Click({
     Apply-SavedLayout
+})
+
+# Fullscreen (All Monitors) - relaunches selected server in fullscreen multimon
+$fullscreenBtn.Add_Click({
+    # Get checked servers
+    $selected = @()
+    foreach ($item in $serverList.CheckedItems) {
+        $selected += $item.ToString()
+    }
+
+    if ($selected.Count -eq 0) {
+        $statusBar.Text = "Check the server(s) you want to open in fullscreen"
+        $statusBar.ForeColor = [System.Drawing.Color]::Orange
+        return
+    }
+
+    $targetServer = $selected[0]
+
+    $statusBar.Text = "Launching $targetServer in fullscreen..."
+    $statusBar.ForeColor = [System.Drawing.Color]::Yellow
+    $form.Refresh()
+
+    # Kill existing session for this server first
+    $mstscProcs = Get-Process -Name "mstsc" -ErrorAction SilentlyContinue
+    if ($mstscProcs) {
+        foreach ($proc in $mstscProcs) {
+            try {
+                if ($proc.MainWindowTitle -match [regex]::Escape($targetServer)) {
+                    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                    Write-DashLog "Closed existing session for $targetServer (PID $($proc.Id))"
+                    Start-Sleep -Seconds 2
+                    break
+                }
+            } catch {}
+        }
+    }
+
+    # Load credentials
+    $creds = Get-ConfiguredCredentials
+    $fsUsername = $creds.Username
+    $fsPassword = $creds.Password
+
+    # Store credentials then launch with /f /multimon
+    & cmdkey /generic:"TERMSRV/$targetServer" /user:$fsUsername /pass:$fsPassword 2>&1 | Out-Null
+
+    $fsProc = Start-Process "mstsc.exe" -ArgumentList "/v:$targetServer /f /multimon" -PassThru
+
+    # Auto-dismiss security/certificate warnings
+    if ($script:uiAutomationLoaded -and $null -ne $fsProc) {
+        Start-Sleep -Seconds 2
+        $securityTitles = @("security", "certificate", "trust", "warning", "Remote Desktop Connection")
+        for ($w = 0; $w -lt 3; $w++) {
+            $timeout = if ($w -eq 0) { 10000 } else { 3000 }
+            $secWin = [RdpUIAutomation]::WaitForWindowTitleByPid($fsProc.Id, $securityTitles, $timeout)
+            if ($null -ne $secWin) {
+                Write-DashLog "  Dismissing warning: '$($secWin.Current.Name)'"
+                $clicked = [RdpUIAutomation]::ClickButton($secWin, "Yes")
+                if (-not $clicked) { $clicked = [RdpUIAutomation]::ClickButton($secWin, "Connect") }
+                if (-not $clicked) { [RdpUIAutomation]::ClickFirstActionButton($secWin) | Out-Null }
+                Start-Sleep -Seconds 2
+            } else { break }
+        }
+    }
+
+    $statusBar.Text = "$targetServer launched in fullscreen"
+    $statusBar.ForeColor = [System.Drawing.Color]::LightGreen
+    Write-DashLog "Fullscreen launched: $targetServer"
 })
 
 # ===== AUTO-REFRESH TIMER =====
