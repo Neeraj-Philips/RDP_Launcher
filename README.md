@@ -25,6 +25,7 @@ Your Laptop                    Jump Server (192.168.226.2)         Target Server
 - **Add/Remove servers** — manage IPs directly from the dashboard
 - **Selective launch/stop** — check individual servers to launch or stop them
 - **Position verification** — auto-fixes misplaced windows after launch
+- **Smart maximize** — grid windows use full monitor resolution, maximize fills the screen
 - **Auto-login** — credentials typed via SendKeys + UI Automation
 - **Auto-dismiss warnings** — certificate/security dialogs handled automatically
 
@@ -222,7 +223,7 @@ On launch, `rdp-grid.ps1`:
 2. Otherwise detects all monitors via `[System.Windows.Forms.Screen]::AllScreens`
 3. Distributes servers evenly across monitors
 4. Calculates optimal grid per monitor
-5. After all windows launch, verifies positions and auto-fixes misplaced ones
+5. Uses full monitor resolution with smart sizing for proper maximize behavior
 
 ## Auto-Login Flow
 

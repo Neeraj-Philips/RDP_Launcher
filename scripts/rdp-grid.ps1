@@ -549,8 +549,17 @@ for ($i = 0; $i -lt $servers.Count; $i++) {
         $safe = $server -replace '[^a-zA-Z0-9\.\-]', '_'
         $rdpPath = Join-Path $rdpFolder "$safe.rdp"
 
-        # winposstr format: flags,showCmd,left,top,right,bottom
-        # showCmd 1 = normal window
+        # Use full monitor resolution for desktop size so maximize works properly
+        # smart sizing scales it down in the grid cell
+        $monitors = Get-MonitorLayout
+        $currentMon = $monitors[0]  # default to first monitor
+        foreach ($mon in $monitors) {
+            if ($pos.X -ge $mon.X -and $pos.X -lt ($mon.X + $mon.Width)) {
+                $currentMon = $mon
+                break
+            }
+        }
+
         $winLeft   = $pos.X
         $winTop    = $pos.Y
         $winRight  = $pos.X + $pos.W
@@ -563,9 +572,8 @@ prompt for credentials:i:0
 authentication level:i:0
 enablecredsspsupport:i:1
 screen mode id:i:1
-use multimon:i:0
-desktopwidth:i:$($pos.W)
-desktopheight:i:$($pos.H)
+desktopwidth:i:$($currentMon.Width)
+desktopheight:i:$($currentMon.Height)
 smart sizing:i:1
 redirectclipboard:i:1
 winposstr:s:0,1,$winLeft,$winTop,$winRight,$winBottom
@@ -602,15 +610,9 @@ winposstr:s:0,1,$winLeft,$winTop,$winRight,$winBottom
     Start-Sleep -Seconds 5
 }
 
-# ===== POST-LAUNCH VERIFICATION =====
-# Wait for all windows to settle, then verify and fix positions
-if ($launchedProcs.Count -gt 0) {
-    Write-Log -Message "" -LogFile $logFile
-    Write-Log -Message "All launches complete. Waiting for windows to settle..." -LogFile $logFile
-    Start-Sleep -Seconds 5
-
-    Verify-WindowPositions -LaunchedProcs $launchedProcs -Positions $positions
-}
+# ===== POST-LAUNCH COMPLETE =====
+Write-Log -Message "" -LogFile $logFile
+Write-Log -Message "All launches complete." -LogFile $logFile
 
 Write-Log -Message "==========================================" -LogFile $logFile
 Write-Log -Message "RDP Grid Launcher finished" -LogFile $logFile
