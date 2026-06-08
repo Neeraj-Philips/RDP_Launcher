@@ -1,0 +1,14 @@
+# ============================================
+# Credentials Configuration
+# ============================================
+# Format:
+#   Username = domain\user
+#   Password = yourpassword
+#
+# This file is used for RDP connections.
+# On the laptop: credentials to connect to the jump server.
+# On the jump server: credentials to connect to target servers.
+# ============================================
+
+Username = DOMAIN\username
+Password = yourpassword

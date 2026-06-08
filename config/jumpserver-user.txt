@@ -1,0 +1,6 @@
+# Username and Password for RDP connections
+# These credentials are used by the jump server
+# to connect to the target client servers.
+
+Username = admin
+Password = #welcome123

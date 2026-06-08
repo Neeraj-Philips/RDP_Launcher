@@ -1,0 +1,15 @@
+# Credentials — never commit
+config/credentials.txt
+config/servers.txt
+config/user.txt
+config/jumpserver-servers.txt
+config/jumpserver-user.txt
+
+# Generated RDP session files
+rdp_sessions/
+
+# Logs
+logs/
+
+# Legacy files (pre-reorganization)
+rdp-auto.log

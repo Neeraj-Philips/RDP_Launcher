@@ -1,0 +1,15 @@
+# ============================================
+# RDP Server List
+# ============================================
+# Add one IP address or hostname per line.
+# Lines starting with # are comments and ignored.
+# Blank lines are ignored.
+#
+# Examples:
+#   192.168.1.100
+#   10.0.0.50
+#   myserver.domain.com
+# ============================================
+
+# 192.168.58.23
+# 10.0.0.50
